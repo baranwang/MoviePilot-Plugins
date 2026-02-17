@@ -9,6 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.core.config import settings
 from app.core.event import eventmanager, Event
+from app.helper.directory import DirectoryHelper
 from app.helper.downloader import DownloaderHelper
 from app.log import logger
 from app.plugins import _PluginBase
@@ -28,7 +29,7 @@ class QbSmartQueue(_PluginBase):
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.0.1"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -60,7 +61,7 @@ class QbSmartQueue(_PluginBase):
     _priority_mode: str = "age"
     _enable_smart_skip: bool = True
     _mponly: bool = True
-    _download_path: str = ""
+    _download_paths: list = []
     _min_free_gb: float = 5
     _downloaders: list = []
 
@@ -74,7 +75,7 @@ class QbSmartQueue(_PluginBase):
             self._priority_mode = config.get("priority_mode") or "age"
             self._enable_smart_skip = config.get("enable_smart_skip", True)
             self._mponly = config.get("mponly", True)
-            self._download_path = config.get("download_path") or ""
+            self._download_paths = config.get("download_paths") or []
             self._min_free_gb = float(config.get("min_free_gb") or 5)
             self._downloaders = config.get("downloaders") or []
 
@@ -98,7 +99,7 @@ class QbSmartQueue(_PluginBase):
                 "priority_mode": self._priority_mode,
                 "enable_smart_skip": self._enable_smart_skip,
                 "mponly": self._mponly,
-                "download_path": self._download_path,
+                "download_paths": self._download_paths,
                 "min_free_gb": self._min_free_gb,
                 "downloaders": self._downloaders,
             })
@@ -233,34 +234,54 @@ class QbSmartQueue(_PluginBase):
             logger.debug(f"[{service_name}] 没有种子")
             return
 
-        # ── 2. 磁盘空间检查 ──
-        if self._download_path:
-            free_bytes = SystemUtils.free_space(Path(self._download_path))
+        # ── 2. 磁盘空间检查（按种子 save_path 匹配监控目录，精准暂停） ──
+        low_space_paths: list = []
+        if self._download_paths:
             min_free_bytes = self._min_free_gb * (1024 ** 3)
-            if free_bytes < min_free_bytes:
-                logger.warning(
-                    f"[{service_name}] 磁盘剩余空间 "
-                    f"{StringUtils.str_filesize(free_bytes)} "
-                    f"低于阈值 {self._min_free_gb}GB，暂停所有下载中的任务"
-                )
-                active_hashes = [
-                    t.get("hash")
-                    for t in torrents
-                    if t.get("state") in self._ACTIVE_DL_STATES
-                ]
-                if active_hashes:
-                    downloader.stop_torrents(ids=active_hashes)
+            for dp in self._download_paths:
+                free_bytes = SystemUtils.free_space(Path(dp))
+                if free_bytes < min_free_bytes:
+                    low_space_paths.append(dp)
+                    logger.warning(
+                        f"[{service_name}] 目录 {dp} 所在磁盘剩余空间 "
+                        f"{StringUtils.str_filesize(free_bytes)} "
+                        f"低于阈值 {self._min_free_gb}GB"
+                    )
+            if low_space_paths:
+                # 只暂停 save_path 属于低空间目录的活跃种子
+                paused_by_disk = []
+                for t in torrents:
+                    if t.get("state") not in self._ACTIVE_DL_STATES:
+                        continue
+                    t_save = t.get("save_path", "")
+                    if t_save and any(
+                        t_save == lp or t_save.startswith(lp.rstrip("/") + "/")
+                        for lp in low_space_paths
+                    ):
+                        downloader.stop_torrents(ids=[t.get("hash")])
+                        paused_by_disk.append(t.get("name", ""))
+                if paused_by_disk:
+                    logger.info(
+                        f"[{service_name}] 磁盘空间不足，暂停 {len(paused_by_disk)} 个种子"
+                    )
                     if self._notify:
                         self.post_message(
                             mtype=NotificationType.SiteMessage,
                             title="【QB智能体积调度】",
                             text=(
                                 f"下载器: {service_name}\n"
-                                f"磁盘剩余空间不足 {self._min_free_gb}GB\n"
-                                f"已暂停 {len(active_hashes)} 个活跃下载任务"
+                                f"磁盘空间不足目录: {', '.join(low_space_paths)}\n"
+                                f"已暂停 {len(paused_by_disk)} 个对应种子:\n"
+                                + ", ".join(paused_by_disk[:5])
                             ),
                         )
-                return
+                    # 重新获取种子列表（状态已变化）
+                    if self._mponly:
+                        torrents, _ = downloader.get_torrents(tags=settings.TORRENT_TAG)
+                    else:
+                        torrents, _ = downloader.get_torrents()
+                    if not torrents:
+                        return
 
         # ── 3. 分类种子 ──
         active_torrents = []
@@ -331,6 +352,18 @@ class QbSmartQueue(_PluginBase):
             t_name = t.get("name", "")
             t_hash = t.get("hash")
             t_size = t.get("total_size", 0)
+            t_save = t.get("save_path", "")
+
+            # 跳过 save_path 处于低空间磁盘的种子，不放行
+            if low_space_paths and t_save and any(
+                t_save == lp or t_save.startswith(lp.rstrip("/") + "/")
+                for lp in low_space_paths
+            ):
+                logger.debug(
+                    f"[{service_name}] 磁盘空间不足，跳过放行: {t_name} "
+                    f"(目录 {t_save})"
+                )
+                continue
 
             if t_left == 0:
                 # 已下载完成但处于暂停状态，直接恢复
@@ -358,20 +391,28 @@ class QbSmartQueue(_PluginBase):
                 else:
                     break
 
-        # ── 7. 防死锁：无活跃下载且有等待任务时，强制放行第一个 ──
+        # ── 7. 防死锁：无活跃下载且有等待任务时，强制放行第一个（排除低空间目录） ──
         if (
             not active_torrents
             and not released
             and paused_torrents
         ):
-            first = paused_torrents[0]
-            f_hash = first.get("hash")
-            f_name = first.get("name", "")
-            downloader.start_torrents(ids=[f_hash])
-            released.append(f_name)
-            logger.info(
-                f"[{service_name}] 防死锁：强制放行 {f_name}"
-            )
+            for candidate in paused_torrents:
+                c_save = candidate.get("save_path", "")
+                # 跳过低空间目录的种子
+                if low_space_paths and c_save and any(
+                    c_save == lp or c_save.startswith(lp.rstrip("/") + "/")
+                    for lp in low_space_paths
+                ):
+                    continue
+                c_hash = candidate.get("hash")
+                c_name = candidate.get("name", "")
+                downloader.start_torrents(ids=[c_hash])
+                released.append(c_name)
+                logger.info(
+                    f"[{service_name}] 防死锁：强制放行 {c_name}"
+                )
+                break
 
         # ── 8. 通知 ──
         if self._notify and (released or paused_by_overflow):
@@ -578,11 +619,22 @@ class QbSmartQueue(_PluginBase):
                                 "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
-                                        "component": "VTextField",
+                                        "component": "VSelect",
                                         "props": {
-                                            "model": "download_path",
-                                            "label": "下载目录(磁盘空间检测)",
-                                            "placeholder": "留空则不检测磁盘空间",
+                                            "multiple": True,
+                                            "chips": True,
+                                            "clearable": True,
+                                            "model": "download_paths",
+                                            "label": "监控下载目录(磁盘空间检测)",
+                                            "items": [
+                                                {
+                                                    "title": d.download_path,
+                                                    "value": d.download_path,
+                                                }
+                                                for d in DirectoryHelper().get_local_download_dirs()
+                                                if d.download_path
+                                            ],
+                                            "hint": "不选则不检测磁盘空间",
                                         },
                                     }
                                 ],
@@ -642,7 +694,7 @@ class QbSmartQueue(_PluginBase):
             "priority_mode": "age",
             "enable_smart_skip": True,
             "mponly": True,
-            "download_path": "",
+            "download_paths": [],
             "min_free_gb": 5,
             "downloaders": [],
         }
