@@ -23,9 +23,9 @@ lock = threading.Lock()
 
 class QbSmartQueue(_PluginBase):
     # 插件名称
-    plugin_name = "qBittorrent 智能体积调度"
+    plugin_name = "qBittorrent 队列调度"
     # 插件描述
-    plugin_desc = "基于下载体积动态管理 qBittorrent 队列，大文件排队、小文件插队，防止硬盘爆满"
+    plugin_desc = "按下载体积动态调度 qBittorrent 队列，自动排队放行，防止磁盘爆满"
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
