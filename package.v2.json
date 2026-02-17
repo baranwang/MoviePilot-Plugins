@@ -1,0 +1,14 @@
+{
+  "QbSmartQueue": {
+    "name": "QB智能体积调度",
+    "description": "基于下载体积动态管理qBittorrent队列，大文件排队、小文件插队，防止硬盘爆满",
+    "labels": "下载,qBittorrent,队列管理",
+    "version": "1.0",
+    "icon": "Qbittorrent_A.png",
+    "author": "anonymity",
+    "level": 2,
+    "history": {
+      "v1.0": "初始版本：体积调度、溢出保护、小文件插队、防死锁、磁盘空间检测"
+    }
+  }
+}
