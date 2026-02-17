@@ -5,7 +5,7 @@
     "labels": "下载,qBittorrent,队列管理",
     "version": "1.0",
     "icon": "Qbittorrent_A.png",
-    "author": "anonymity",
+    "author": "baranwang",
     "level": 2,
     "history": {
       "v1.0": "初始版本：体积调度、溢出保护、小文件插队、防死锁、磁盘空间检测"

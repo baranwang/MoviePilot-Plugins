@@ -30,9 +30,9 @@ class QbSmartQueue(_PluginBase):
     # 插件版本
     plugin_version = "1.0"
     # 插件作者
-    plugin_author = "anonymity"
+    plugin_author = "baranwang"
     # 作者主页
-    author_url = "https://github.com"
+    author_url = "https://github.com/baranwang"
     # 插件配置项ID前缀
     plugin_config_prefix = "qbsmartqueue_"
     # 加载顺序
