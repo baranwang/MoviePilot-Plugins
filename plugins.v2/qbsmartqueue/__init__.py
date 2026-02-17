@@ -23,18 +23,18 @@ lock = threading.Lock()
 
 class QbSmartQueue(_PluginBase):
     # 插件名称
-    plugin_name = "QB智能体积调度"
+    plugin_name = "qBittorrent 智能体积调度"
     # 插件描述
-    plugin_desc = "基于下载体积动态管理qBittorrent队列，大文件排队、小文件插队，防止硬盘爆满"
+    plugin_desc = "基于下载体积动态管理 qBittorrent 队列，大文件排队、小文件插队，防止硬盘爆满"
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
     author_url = "https://github.com/baranwang"
-    # 插件配置项ID前缀
+    # 插件配置项 ID 前缀
     plugin_config_prefix = "qbsmartqueue_"
     # 加载顺序
     plugin_order = 5
@@ -83,7 +83,7 @@ class QbSmartQueue(_PluginBase):
 
         if self._onlyonce:
             self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-            logger.info("QB智能体积调度服务启动，立即运行一次")
+            logger.info("qBittorrent 智能体积调度服务启动，立即运行一次")
             self._scheduler.add_job(
                 func=self.manage_queue,
                 trigger="date",
@@ -116,8 +116,8 @@ class QbSmartQueue(_PluginBase):
             {
                 "cmd": "/smart_queue",
                 "event": EventType.PluginAction,
-                "desc": "立即执行QB智能体积调度",
-                "category": "QB",
+                "desc": "立即执行 qBittorrent 智能体积调度",
+                "category": "qBittorrent",
                 "data": {"action": "smart_queue"},
             }
         ]
@@ -133,7 +133,7 @@ class QbSmartQueue(_PluginBase):
             return [
                 {
                     "id": "QbSmartQueue",
-                    "name": "QB智能体积调度",
+                    "name": "qBittorrent 智能体积调度",
                     "trigger": CronTrigger.from_crontab(self._cron),
                     "func": self.manage_queue,
                     "kwargs": {},
@@ -162,12 +162,12 @@ class QbSmartQueue(_PluginBase):
             elif not DownloaderHelper().is_downloader(
                 service_type="qbittorrent", service=service_info
             ):
-                logger.warning(f"下载器 {service_name} 不是qBittorrent类型，跳过")
+                logger.warning(f"下载器 {service_name} 不是 qBittorrent 类型，跳过")
             else:
                 active_services[service_name] = service_info
 
         if not active_services:
-            logger.warning("没有已连接的qBittorrent下载器，请检查配置")
+            logger.warning("没有已连接的 qBittorrent 下载器，请检查配置")
             return None
 
         return active_services
@@ -183,7 +183,7 @@ class QbSmartQueue(_PluginBase):
             event_data = event.event_data
             if not event_data or event_data.get("action") != "smart_queue":
                 return
-        logger.info("收到远程命令，立即执行QB智能体积调度")
+        logger.info("收到远程命令，立即执行 qBittorrent 智能体积调度")
         self.manage_queue()
 
     @eventmanager.register(EventType.DownloadAdded)
@@ -193,12 +193,12 @@ class QbSmartQueue(_PluginBase):
         """
         if not self._enabled:
             return
-        logger.info("检测到新下载任务，触发QB智能体积调度")
+        logger.info("检测到新下载任务，触发 qBittorrent 智能体积调度")
         self.manage_queue()
 
     def manage_queue(self):
         """
-        核心调度逻辑：遍历所有已配置的qB下载器，分别执行队列管理
+        核心调度逻辑：遍历所有已配置的 qBittorrent 下载器，分别执行队列管理
         """
         with lock:
             services = self.service_infos
@@ -245,7 +245,7 @@ class QbSmartQueue(_PluginBase):
                     logger.warning(
                         f"[{service_name}] 目录 {dp} 所在磁盘剩余空间 "
                         f"{StringUtils.str_filesize(free_bytes)} "
-                        f"低于阈值 {self._min_free_gb}GB"
+                        f"低于阈值 {self._min_free_gb} GB"
                     )
             if low_space_paths:
                 # 只暂停 save_path 属于低空间目录的活跃种子
@@ -267,7 +267,7 @@ class QbSmartQueue(_PluginBase):
                     if self._notify:
                         self.post_message(
                             mtype=NotificationType.SiteMessage,
-                            title="【QB智能体积调度】",
+                            title="【qBittorrent 智能体积调度】",
                             text=(
                                 f"下载器: {service_name}\n"
                                 f"磁盘空间不足目录: {', '.join(low_space_paths)}\n"
@@ -298,7 +298,7 @@ class QbSmartQueue(_PluginBase):
         logger.info(
             f"[{service_name}] 活跃下载: {len(active_torrents)} 个, "
             f"剩余体积: {StringUtils.str_filesize(active_left)}, "
-            f"容量上限: {self._max_capacity_gb}GB, "
+            f"容量上限: {self._max_capacity_gb} GB, "
             f"待调度: {len(paused_torrents)} 个"
         )
 
@@ -431,11 +431,11 @@ class QbSmartQueue(_PluginBase):
                 text_parts.append(f"跳过大文件 {len(skipped)} 个")
             text_parts.append(
                 f"当前活跃下载剩余: {StringUtils.str_filesize(active_left)} / "
-                f"{self._max_capacity_gb}GB"
+                f"{self._max_capacity_gb} GB"
             )
             self.post_message(
                 mtype=NotificationType.SiteMessage,
-                title="【QB智能体积调度】",
+                title="【qBittorrent 智能体积调度】",
                 text="\n".join(text_parts),
             )
 
@@ -470,19 +470,6 @@ class QbSmartQueue(_PluginBase):
                                         "props": {
                                             "model": "notify",
                                             "label": "发送通知",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {
-                                            "model": "onlyonce",
-                                            "label": "立即运行一次",
                                         },
                                     }
                                 ],
@@ -546,7 +533,7 @@ class QbSmartQueue(_PluginBase):
                                         "component": "VTextField",
                                         "props": {
                                             "model": "max_capacity_gb",
-                                            "label": "最大并发下载体积(GB)",
+                                            "label": "最大并发下载体积 (GB)",
                                             "placeholder": "35",
                                             "type": "number",
                                         },
@@ -555,7 +542,7 @@ class QbSmartQueue(_PluginBase):
                             },
                         ],
                     },
-                    # ── 排队策略 + 仅MP任务 ──
+                    # ── 排队策略 + 仅 MP 任务 ──
                     {
                         "component": "VRow",
                         "content": [
@@ -603,7 +590,7 @@ class QbSmartQueue(_PluginBase):
                                         "component": "VSwitch",
                                         "props": {
                                             "model": "mponly",
-                                            "label": "仅MoviePilot任务",
+                                            "label": "仅 MoviePilot 任务",
                                         },
                                     }
                                 ],
@@ -625,7 +612,7 @@ class QbSmartQueue(_PluginBase):
                                             "chips": True,
                                             "clearable": True,
                                             "model": "download_paths",
-                                            "label": "监控下载目录(磁盘空间检测)",
+                                            "label": "监控下载目录 (磁盘空间检测)",
                                             "items": [
                                                 {
                                                     "title": d.download_path,
@@ -647,7 +634,7 @@ class QbSmartQueue(_PluginBase):
                                         "component": "VTextField",
                                         "props": {
                                             "model": "min_free_gb",
-                                            "label": "最低磁盘剩余空间(GB)",
+                                            "label": "最低磁盘剩余空间 (GB)",
                                             "placeholder": "5",
                                             "type": "number",
                                         },
@@ -670,11 +657,11 @@ class QbSmartQueue(_PluginBase):
                                             "type": "info",
                                             "variant": "tonal",
                                             "text": (
-                                                "根据正在下载任务的剩余体积总和动态管理qB队列：\n"
-                                                "1. 溢出保护：活跃下载超限时暂停最新任务\n"
-                                                "2. 智能放行：按策略排序，逐个放行不超限的任务\n"
-                                                "3. 小文件插队：大文件塞不下时跳过，放行后面小文件\n"
-                                                "4. 防死锁：无活跃下载时强制放行第一个\n"
+                                                "根据正在下载任务的剩余体积总和动态管理 qBittorrent 队列：\n\n"
+                                                "1. 溢出保护：活跃下载超限时暂停最新任务\n\n"
+                                                "2. 智能放行：按策略排序，逐个放行不超限的任务\n\n"
+                                                "3. 小文件插队：大文件塞不下时跳过，放行后面小文件\n\n"
+                                                "4. 防死锁：无活跃下载时强制放行第一个\n\n"
                                                 "5. 磁盘保护：剩余空间低于阈值时暂停所有下载"
                                             ),
                                         },
@@ -715,4 +702,4 @@ class QbSmartQueue(_PluginBase):
                     self._event.clear()
                 self._scheduler = None
         except Exception as e:
-            logger.error(f"QB智能体积调度停止服务异常: {e}")
+            logger.error(f"qBittorrent 智能体积调度停止服务异常: {e}")
