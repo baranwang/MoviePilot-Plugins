@@ -33,7 +33,7 @@ class MediaLibCovers(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.2.0"
+    plugin_version = "1.2.1"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "medialibcovers_"
@@ -676,13 +676,11 @@ class MediaLibCovers(_PluginBase):
             res = service.instance.get_data(url=url)
             if res:
                 items = res.json().get("Items", [])
-                # 筛选有图片的项目
+                # 只筛选有竖版海报(Primary)的项目
                 return [
                     item
                     for item in items
-                    if (item.get("ImageTags") and item["ImageTags"].get("Primary"))
-                    or item.get("BackdropImageTags")
-                    or item.get("ParentBackdropImageTags")
+                    if item.get("ImageTags") and item["ImageTags"].get("Primary")
                 ]
         except Exception as e:
             logger.error(f"获取媒体项失败：{e}")
@@ -696,23 +694,13 @@ class MediaLibCovers(_PluginBase):
         for i, item in enumerate(items, 1):
             filepath = subdir / f"{i}.jpg"
 
-            # 获取海报图片 URL（优先使用竖版海报 Primary）
-            image_url = None
-            if item.get("ImageTags") and item["ImageTags"].get("Primary"):
-                item_id = item["Id"]
-                tag = item["ImageTags"]["Primary"]
-                image_url = f"[HOST]emby/Items/{item_id}/Images/Primary?tag={tag}&api_key=[APIKEY]"
-            elif item.get("BackdropImageTags") and len(item["BackdropImageTags"]) > 0:
-                item_id = item["Id"]
-                tag = item["BackdropImageTags"][0]
-                image_url = f"[HOST]emby/Items/{item_id}/Images/Backdrop/0?tag={tag}&api_key=[APIKEY]"
-            elif item.get("ParentBackdropImageTags") and len(item["ParentBackdropImageTags"]) > 0:
-                item_id = item.get("ParentBackdropItemId")
-                tag = item["ParentBackdropImageTags"][0]
-                image_url = f"[HOST]emby/Items/{item_id}/Images/Backdrop/0?tag={tag}&api_key=[APIKEY]"
-
-            if not image_url:
+            # 只使用竖版海报 Primary
+            if not (item.get("ImageTags") and item["ImageTags"].get("Primary")):
                 continue
+
+            item_id = item["Id"]
+            tag = item["ImageTags"]["Primary"]
+            image_url = f"[HOST]emby/Items/{item_id}/Images/Primary?tag={tag}&api_key=[APIKEY]"
 
             # 下载图片
             try:

@@ -3,14 +3,15 @@
     "name": "媒体库封面生成",
     "description": "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面",
     "labels": "媒体库,封面,Emby,Jellyfin",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "icon": "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png",
     "author": "baranwang",
     "level": 1,
     "history": {
       "v1.0.0": "初始版本：多图旋转海报封面生成，支持自定义标题、自定义图片目录",
       "v1.1.0": "修复字体加载（自动下载 + LFS 检测）；修复海报旋转方向和网格定位；支持合集类型媒体库；执行周期可视化配置；重命名插件避免与原版冲突",
-      "v1.2.0": "修复海报网格定位算法，以左上角为旋转原点逐列变换，确保三列均可见；更新模板布局参数"
+      "v1.2.0": "修复海报网格定位算法，更新模板布局参数",
+      "v1.2.1": "修复网格定位偏移（用边界框中心对齐）；修复合集库不更新；只使用竖版海报"
     }
   },
   "QbSmartQueue": {
