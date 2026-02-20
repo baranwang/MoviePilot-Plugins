@@ -29,7 +29,7 @@ class QbSmartQueue(_PluginBase):
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
-    plugin_version = "1.0.2"
+    plugin_version = "1.1.0"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -295,6 +295,9 @@ class QbSmartQueue(_PluginBase):
 
         active_left = sum(t.get("amount_left", 0) for t in active_torrents)
 
+        # ── 3.1 构建磁盘虚拟剩余空间 map ──
+        free_space_map = self._get_free_space_map()
+
         logger.info(
             f"[{service_name}] 活跃下载: {len(active_torrents)} 个, "
             f"剩余体积: {StringUtils.str_filesize(active_left)}, "
@@ -347,6 +350,7 @@ class QbSmartQueue(_PluginBase):
         # ── 6. 放行逻辑 ──
         released = []
         skipped = []
+        skipped_disk = []
         for t in paused_torrents:
             t_left = t.get("amount_left", 0)
             t_name = t.get("name", "")
@@ -372,9 +376,21 @@ class QbSmartQueue(_PluginBase):
                 logger.info(f"[{service_name}] 恢复已完成种子: {t_name}")
                 continue
 
+            # 磁盘空间预检：计算放行后磁盘是否还能容纳
+            if not self._check_disk_budget(t_save, t_left, free_space_map):
+                skipped_disk.append(t_name)
+                logger.info(
+                    f"[{service_name}] 磁盘空间不足以容纳，跳过: {t_name} "
+                    f"(需要 {StringUtils.str_filesize(t_left)}, "
+                    f"目录 {t_save})"
+                )
+                continue
+
             if active_left + t_left <= max_capacity_bytes:
                 downloader.start_torrents(ids=[t_hash])
                 active_left += t_left
+                # 扣减虚拟磁盘空间
+                self._deduct_disk_budget(t_save, t_left, free_space_map)
                 released.append(t_name)
                 logger.info(
                     f"[{service_name}] 放行: {t_name} "
@@ -399,15 +415,24 @@ class QbSmartQueue(_PluginBase):
         ):
             for candidate in paused_torrents:
                 c_save = candidate.get("save_path", "")
+                c_left = candidate.get("amount_left", 0)
                 # 跳过低空间目录的种子
                 if low_space_paths and c_save and any(
                     c_save == lp or c_save.startswith(lp.rstrip("/") + "/")
                     for lp in low_space_paths
                 ):
                     continue
+                # 磁盘空间安全检查：即使防死锁也不能让磁盘写满
+                if not self._check_disk_budget(c_save, c_left, free_space_map):
+                    logger.warning(
+                        f"[{service_name}] 防死锁：磁盘空间不足，跳过 {candidate.get('name', '')} "
+                        f"(需要 {StringUtils.str_filesize(c_left)}, 目录 {c_save})"
+                    )
+                    continue
                 c_hash = candidate.get("hash")
                 c_name = candidate.get("name", "")
                 downloader.start_torrents(ids=[c_hash])
+                self._deduct_disk_budget(c_save, c_left, free_space_map)
                 released.append(c_name)
                 logger.info(
                     f"[{service_name}] 防死锁：强制放行 {c_name}"
@@ -415,7 +440,7 @@ class QbSmartQueue(_PluginBase):
                 break
 
         # ── 8. 通知 ──
-        if self._notify and (released or paused_by_overflow):
+        if self._notify and (released or paused_by_overflow or skipped_disk):
             text_parts = [f"下载器: {service_name}"]
             if paused_by_overflow:
                 text_parts.append(
@@ -429,6 +454,11 @@ class QbSmartQueue(_PluginBase):
                 )
             if skipped:
                 text_parts.append(f"跳过大文件 {len(skipped)} 个")
+            if skipped_disk:
+                text_parts.append(
+                    f"磁盘空间不足跳过 {len(skipped_disk)} 个: "
+                    + ", ".join(skipped_disk[:5])
+                )
             text_parts.append(
                 f"当前活跃下载剩余: {StringUtils.str_filesize(active_left)} / "
                 f"{self._max_capacity_gb} GB"
@@ -438,6 +468,59 @@ class QbSmartQueue(_PluginBase):
                 title="【qBittorrent 智能体积调度】",
                 text="\n".join(text_parts),
             )
+
+    def _get_free_space_map(self) -> Dict[str, int]:
+        """
+        获取各监控目录的当前磁盘剩余空间，返回 {路径: 剩余字节} 的 map。
+        此 map 在放行过程中会被动态扣减，用于追踪"虚拟剩余空间"。
+        """
+        free_map: Dict[str, int] = {}
+        if not self._download_paths:
+            return free_map
+        for dp in self._download_paths:
+            free_bytes = SystemUtils.free_space(Path(dp))
+            free_map[dp] = free_bytes
+            logger.debug(f"磁盘空间: {dp} -> {StringUtils.str_filesize(free_bytes)}")
+        return free_map
+
+    def _match_download_path(self, save_path: str) -> Optional[str]:
+        """
+        将种子的 save_path 匹配到监控目录列表中对应的路径。
+        返回匹配到的监控路径，未匹配到返回 None。
+        """
+        if not self._download_paths or not save_path:
+            return None
+        for dp in self._download_paths:
+            if save_path == dp or save_path.startswith(dp.rstrip("/") + "/"):
+                return dp
+        return None
+
+    def _check_disk_budget(
+        self, save_path: str, needed: int, free_map: Dict[str, int]
+    ) -> bool:
+        """
+        检查 save_path 所在磁盘能否容纳 needed 字节。
+        基于虚拟剩余空间 map 判断：放行后剩余空间必须 >= min_free_gb。
+        未配置监控目录或 save_path 不属于任何监控目录时，默认放行。
+        """
+        if not free_map:
+            return True
+        matched_path = self._match_download_path(save_path)
+        if matched_path is None:
+            return True  # save_path 不属于任何监控目录，跳过检查
+        available = free_map.get(matched_path, 0)
+        min_free_bytes = self._min_free_gb * (1024 ** 3)
+        return (available - needed) >= min_free_bytes
+
+    def _deduct_disk_budget(
+        self, save_path: str, used: int, free_map: Dict[str, int]
+    ):
+        """
+        从虚拟空间 map 中扣减已放行种子的体积。
+        """
+        matched_path = self._match_download_path(save_path)
+        if matched_path is not None and matched_path in free_map:
+            free_map[matched_path] -= used
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         return [
