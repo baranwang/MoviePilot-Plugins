@@ -431,7 +431,7 @@ class MediaCoverGenerator(_PluginBase):
         1. 搜索本地候选目录并验证可用性
         2. 找不到或不可用则从 GitHub 下载到数据目录
         """
-        zh_name = "NotoSansTC-Bold.ttf"
+        zh_name = "NotoSansSC-Bold.ttf"
         en_name = "Lexend-SemiBold.ttf"
 
         # 数据目录下的字体目录
