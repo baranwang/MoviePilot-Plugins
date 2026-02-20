@@ -33,7 +33,7 @@ class MediaLibCovers(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.3.0"
+    plugin_version = "1.3.1"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "medialibcovers_"
@@ -675,24 +675,35 @@ class MediaLibCovers(_PluginBase):
                 else library.get("ItemId")
             )
 
-            url = (
+            base_url = (
                 f"[HOST]emby/Items/?api_key=[APIKEY]"
                 f"&ParentId={library_id}&Limit={limit}"
-                f"&IncludeItemTypes=Movie,Series,BoxSet"
                 f"&Recursive=True"
                 f"&SortBy=PremiereDate,SortName"
                 f"&SortOrder=Descending"
             )
 
+            # 先按类型过滤（排除季和集）
+            url = f"{base_url}&IncludeItemTypes=Movie,Series,BoxSet"
             res = service.instance.get_data(url=url)
+            items = []
             if res:
-                items = res.json().get("Items", [])
-                # 只筛选有竖版海报(Primary)的项目
-                return [
-                    item
-                    for item in items
+                items = [
+                    item for item in res.json().get("Items", [])
                     if item.get("ImageTags") and item["ImageTags"].get("Primary")
                 ]
+
+            # 如果过滤后无结果，不带类型过滤重试（兼容合集等特殊库）
+            if not items:
+                logger.info(f"按类型过滤无结果，尝试不限类型查询: {library.get('Name')}")
+                res = service.instance.get_data(url=base_url)
+                if res:
+                    items = [
+                        item for item in res.json().get("Items", [])
+                        if item.get("ImageTags") and item["ImageTags"].get("Primary")
+                    ]
+
+            return items
         except Exception as e:
             logger.error(f"获取媒体项失败：{e}")
         return []
