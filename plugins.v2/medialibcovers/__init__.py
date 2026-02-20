@@ -33,7 +33,7 @@ class MediaLibCovers(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.2.1"
+    plugin_version = "1.3.0"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "medialibcovers_"
@@ -566,18 +566,28 @@ class MediaLibCovers(_PluginBase):
 
     def _prepare_library_images(self, library_dir) -> bool:
         """
-        确保目录中有 1-9.jpg
+        确保目录中有 1-9 号图片（支持 webp/jpg/png 等格式）
         缺失的号码从已有图片中随机复制补全
         """
         library_dir = str(library_dir)
         os.makedirs(library_dir, exist_ok=True)
 
-        existing_numbers = []
+        supported_exts = (".webp", ".jpg", ".jpeg", ".png", ".bmp")
+
+        def _find_numbered(num: int) -> Optional[str]:
+            """查找指定编号的图片文件（任意格式）"""
+            for ext in supported_exts:
+                path = os.path.join(library_dir, f"{num}{ext}")
+                if os.path.exists(path):
+                    return path
+            return None
+
+        existing = {}  # num -> filepath
         missing_numbers = []
         for i in range(1, 10):
-            target = os.path.join(library_dir, f"{i}.jpg")
-            if os.path.exists(target):
-                existing_numbers.append(i)
+            found = _find_numbered(i)
+            if found:
+                existing[i] = found
             else:
                 missing_numbers.append(i)
 
@@ -585,20 +595,18 @@ class MediaLibCovers(_PluginBase):
             return True
 
         # 找到可用的源图片
-        source_files = []
-        for f in os.listdir(library_dir):
-            if not re.match(r"^[1-9]\.jpg$", f, re.IGNORECASE):
-                if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+        source_files = list(existing.values())
+        if not source_files:
+            # 没有编号文件，查找其他图片
+            for f in os.listdir(library_dir):
+                if f.lower().endswith(supported_exts):
                     source_files.append(os.path.join(library_dir, f))
 
         if not source_files:
-            if existing_numbers:
-                source_files = [os.path.join(library_dir, f"{i}.jpg") for i in existing_numbers]
-            else:
-                logger.warning(f"目录 {library_dir} 中没有可用图片")
-                return False
+            logger.warning(f"目录 {library_dir} 中没有可用图片")
+            return False
 
-        # 补全缺失的文件
+        # 补全缺失的文件（复制为 webp）
         last_used = None
         for num in missing_numbers:
             target = os.path.join(library_dir, f"{num}.jpg")
@@ -669,8 +677,11 @@ class MediaLibCovers(_PluginBase):
 
             url = (
                 f"[HOST]emby/Items/?api_key=[APIKEY]"
-                f"&ParentId={library_id}&SortBy=Random&Limit={limit}"
-                f"&Recursive=True&SortOrder=Descending"
+                f"&ParentId={library_id}&Limit={limit}"
+                f"&IncludeItemTypes=Movie,Series,BoxSet"
+                f"&Recursive=True"
+                f"&SortBy=PremiereDate,SortName"
+                f"&SortOrder=Descending"
             )
 
             res = service.instance.get_data(url=url)
@@ -724,7 +735,7 @@ class MediaLibCovers(_PluginBase):
             res = service.instance.post_data(
                 url=url,
                 data=image_base64,
-                headers={"Content-Type": "image/png"},
+                headers={"Content-Type": "image/webp"},
             )
 
             if res and res.status_code in [200, 204]:
