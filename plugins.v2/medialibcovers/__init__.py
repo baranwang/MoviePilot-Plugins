@@ -33,7 +33,7 @@ class MediaLibCovers(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.3.4"
+    plugin_version = "1.3.5"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "medialibcovers_"
@@ -699,31 +699,16 @@ class MediaLibCovers(_PluginBase):
             res = service.instance.get_data(url=url)
             items = []
             if res:
-                all_items = res.json().get("Items", [])
-                preview = [f"{it.get('Name')}({it.get('Type')})" for it in all_items[:5]]
-                logger.info(f"类型过滤查询返回 {len(all_items)} 项: {preview}")
-                items = [
-                    item for item in all_items
-                    if self._has_primary_image(item)
-                ]
-                logger.info(f"其中有 Primary 海报的: {len(items)} 项")
+                items = res.json().get("Items", [])
+                logger.info(f"类型过滤查询返回 {len(items)} 项")
 
-            # 如果过滤后无结果，不带类型过滤重试（兼容合集等特殊库）
+            # 如果过滤后无结果，不带类型过滤重试
             if not items:
                 logger.info(f"按类型过滤无结果，尝试不限类型查询: {library.get('Name')}")
                 res = service.instance.get_data(url=base_url)
                 if res:
-                    all_items = res.json().get("Items", [])
-                    preview = [
-                        f"{it.get('Name')}({it.get('Type')},img={bool(it.get('ImageTags', {}).get('Primary'))})"
-                        for it in all_items[:5]
-                    ]
-                    logger.info(f"无类型过滤查询返回 {len(all_items)} 项: {preview}")
-                    items = [
-                        item for item in all_items
-                        if self._has_primary_image(item)
-                    ]
-                    logger.info(f"其中有 Primary 海报的: {len(items)} 项")
+                    items = res.json().get("Items", [])
+                    logger.info(f"无类型过滤查询返回 {len(items)} 项")
 
             return items
         except Exception as e:
@@ -735,22 +720,26 @@ class MediaLibCovers(_PluginBase):
         subdir = self._covers_path / library_name
         subdir.mkdir(parents=True, exist_ok=True)
 
-        for i, item in enumerate(items, 1):
-            filepath = subdir / f"{i}.jpg"
+        downloaded = 0
+        for item in items:
+            if downloaded >= 9:
+                break
 
             item_id = item["Id"]
-            # 构建图片 URL（tag 可选，用于缓存）
             tag = (item.get("ImageTags") or {}).get("Primary") or item.get("PrimaryImageTag") or ""
             image_url = f"[HOST]emby/Items/{item_id}/Images/Primary?api_key=[APIKEY]"
             if tag:
                 image_url += f"&tag={tag}"
 
-            # 下载图片
             try:
                 res = service.instance.get_data(url=image_url)
-                if res and res.status_code == 200:
+                if res and res.status_code == 200 and len(res.content) > 1000:
+                    downloaded += 1
+                    filepath = subdir / f"{downloaded}.jpg"
                     with open(filepath, "wb") as f:
                         f.write(res.content)
+                else:
+                    logger.debug(f"跳过无图片项目: {item.get('Name')}")
             except Exception as e:
                 logger.warning(f"下载海报失败: {e}")
 
