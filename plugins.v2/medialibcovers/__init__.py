@@ -33,7 +33,7 @@ class MediaLibCovers(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.3.3"
+    plugin_version = "1.3.4"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "medialibcovers_"
@@ -666,6 +666,17 @@ class MediaLibCovers(_PluginBase):
             logger.error(f"获取所有媒体库失败：{e}")
         return lib_items
 
+    @staticmethod
+    def _has_primary_image(item: dict) -> bool:
+        """检测媒体项是否有 Primary 图片（兼容 BoxSet 等类型）"""
+        if item.get("ImageTags") and item["ImageTags"].get("Primary"):
+            return True
+        if item.get("PrimaryImageTag"):
+            return True
+        if item.get("HasPrimaryImage"):
+            return True
+        return False
+
     def _get_library_items(self, service, library, limit: int = 20) -> list:
         """获取媒体库中的媒体项"""
         try:
@@ -693,7 +704,7 @@ class MediaLibCovers(_PluginBase):
                 logger.info(f"类型过滤查询返回 {len(all_items)} 项: {preview}")
                 items = [
                     item for item in all_items
-                    if item.get("ImageTags") and item["ImageTags"].get("Primary")
+                    if self._has_primary_image(item)
                 ]
                 logger.info(f"其中有 Primary 海报的: {len(items)} 项")
 
@@ -710,7 +721,7 @@ class MediaLibCovers(_PluginBase):
                     logger.info(f"无类型过滤查询返回 {len(all_items)} 项: {preview}")
                     items = [
                         item for item in all_items
-                        if item.get("ImageTags") and item["ImageTags"].get("Primary")
+                        if self._has_primary_image(item)
                     ]
                     logger.info(f"其中有 Primary 海报的: {len(items)} 项")
 
@@ -727,13 +738,12 @@ class MediaLibCovers(_PluginBase):
         for i, item in enumerate(items, 1):
             filepath = subdir / f"{i}.jpg"
 
-            # 只使用竖版海报 Primary
-            if not (item.get("ImageTags") and item["ImageTags"].get("Primary")):
-                continue
-
             item_id = item["Id"]
-            tag = item["ImageTags"]["Primary"]
-            image_url = f"[HOST]emby/Items/{item_id}/Images/Primary?tag={tag}&api_key=[APIKEY]"
+            # 构建图片 URL（tag 可选，用于缓存）
+            tag = (item.get("ImageTags") or {}).get("Primary") or item.get("PrimaryImageTag") or ""
+            image_url = f"[HOST]emby/Items/{item_id}/Images/Primary?api_key=[APIKEY]"
+            if tag:
+                image_url += f"&tag={tag}"
 
             # 下载图片
             try:
