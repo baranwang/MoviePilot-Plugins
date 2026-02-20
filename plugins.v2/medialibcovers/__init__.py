@@ -33,7 +33,7 @@ class MediaLibCovers(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.3.1"
+    plugin_version = "1.3.2"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "medialibcovers_"
@@ -688,20 +688,32 @@ class MediaLibCovers(_PluginBase):
             res = service.instance.get_data(url=url)
             items = []
             if res:
+                all_items = res.json().get("Items", [])
+                logger.info(
+                    f"类型过滤查询返回 {len(all_items)} 项: "
+                    f"{[f'{it.get(\"Name\")}({it.get(\"Type\")})' for it in all_items[:5]]}"
+                )
                 items = [
-                    item for item in res.json().get("Items", [])
+                    item for item in all_items
                     if item.get("ImageTags") and item["ImageTags"].get("Primary")
                 ]
+                logger.info(f"其中有 Primary 海报的: {len(items)} 项")
 
             # 如果过滤后无结果，不带类型过滤重试（兼容合集等特殊库）
             if not items:
                 logger.info(f"按类型过滤无结果，尝试不限类型查询: {library.get('Name')}")
                 res = service.instance.get_data(url=base_url)
                 if res:
+                    all_items = res.json().get("Items", [])
+                    logger.info(
+                        f"无类型过滤查询返回 {len(all_items)} 项: "
+                        f"{[f'{it.get(\"Name\")}({it.get(\"Type\")},img={bool(it.get(\"ImageTags\",{}).get(\"Primary\"))})' for it in all_items[:5]]}"
+                    )
                     items = [
-                        item for item in res.json().get("Items", [])
+                        item for item in all_items
                         if item.get("ImageTags") and item["ImageTags"].get("Primary")
                     ]
+                    logger.info(f"其中有 Primary 海报的: {len(items)} 项")
 
             return items
         except Exception as e:
