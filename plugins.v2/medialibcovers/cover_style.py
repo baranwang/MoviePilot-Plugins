@@ -44,13 +44,22 @@ GRID_ROWS = 3
 GRID_COLS = 3
 ROTATION_ANGLE = -15  # 旋转角度（度）
 
-# 三列海报在设计稿中的起始位置 (x, y) × SCALE
-# 基于 .pen 文件中 Frame 11/12/13 的坐标
+# 三列海报在容器内的起始位置 (x, y) × SCALE
+# layout 计算后的实际坐标：
+# 列 1: x=0, 图片从 y=32 开始 (padding-top=32)
+# 列 2: x=68, 图片从 y=0 开始 (无 padding)
+# 列 3: x=136, 图片从 y=32 开始 (padding-top=32)
 COL_POSITIONS = [
-    (0 * SCALE, 55 * SCALE),      # 第 1 列 (Frame 11): x=0, y=55
-    (68 * SCALE, 3 * SCALE),      # 第 2 列 (Frame 12): x=68, y=3
-    (136 * SCALE, 64 * SCALE),    # 第 3 列 (Frame 13): x=136, y=64
+    (0 * SCALE, 32 * SCALE),      # 第 1 列: padding-top=32
+    (68 * SCALE, 0 * SCALE),      # 第 2 列: 无 padding
+    (136 * SCALE, 32 * SCALE),    # 第 3 列: padding-top=32
 ]
+
+# 海报网格容器（layout 计算后的实际尺寸和位置）
+GRID_CONTAINER_W = 200 * SCALE      # 64*3 + 4*2 = 200（三列宽度 + 间距）
+GRID_CONTAINER_H = 328 * SCALE      # 最高列的高度（32+96*3+4*2=336→实际328）
+GRID_ORIGIN_X = 144 * SCALE         # 容器在画布中的 x 坐标
+GRID_ORIGIN_Y = -76 * SCALE         # 容器在画布中的 y 坐标
 
 
 # 文字位置（设计稿坐标 × SCALE）
@@ -190,40 +199,62 @@ def create_poster_column(
     return column
 
 
-def create_rotated_poster_grid(poster_paths: List[str]) -> Image.Image:
+def _place_rotated_grid(canvas: Image.Image, poster_paths: List[str]):
     """
-    创建旋转的 3×3 海报网格
+    将旋转的海报网格直接放置到画布上
 
-    根据 template.pen 中的结构：
-    - 3 列，每列 3 张海报
-    - 各列具有不同的起始 Y 位置（交错排列）
-    - 整个网格旋转 -15°
+    .pen 模板中的变换逻辑：
+    - 容器左上角在画布 (223.57, -95) 处
+    - 容器内各列子元素有各自的 (x, y) 偏移
+    - 整个容器以其左上角为原点旋转 -15°
+    - 每个子元素的画布坐标 = 旋转矩阵 × 容器内坐标 + 容器原点
     """
+    # 容器原点（设计稿坐标 × SCALE）
+    origin_x = GRID_ORIGIN_X
+    origin_y = GRID_ORIGIN_Y
+
+    # 旋转参数
+    angle_rad = math.radians(ROTATION_ANGLE)  # -15° → radians
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+
     # 将 9 张海报分成 3 组
     grouped = [poster_paths[i:i + GRID_ROWS] for i in range(0, len(poster_paths), GRID_ROWS)]
-
-    # 网格容器的大小（足够容纳三列 + 偏移）
-    # 基于 .pen 文件：容器宽 195×SCALE，高 462×SCALE
-    container_w = 195 * SCALE
-    container_h = 462 * SCALE
-    container = Image.new("RGBA", (container_w, container_h), (0, 0, 0, 0))
 
     for col_idx, col_posters in enumerate(grouped):
         if col_idx >= GRID_COLS:
             break
 
+        # 创建该列的海报图片
         column_img = create_poster_column(
             col_posters, POSTER_WIDTH, POSTER_HEIGHT, POSTER_GAP, POSTER_CORNER_RADIUS
         )
 
-        # 各列在容器内的位置
-        cx, cy = COL_POSITIONS[col_idx]
-        container.paste(column_img, (cx, cy), column_img)
+        # 该列在容器内的本地坐标
+        local_x, local_y = COL_POSITIONS[col_idx]
 
-    # 旋转整个容器
-    rotated = container.rotate(ROTATION_ANGLE, Image.BICUBIC, expand=True)
+        # 以容器左上角为原点，对本地坐标应用旋转
+        # 旋转公式：x' = x*cos - y*sin, y' = x*sin + y*cos
+        rotated_x = local_x * cos_a - local_y * sin_a + origin_x
+        rotated_y = local_x * sin_a + local_y * cos_a + origin_y
 
-    return rotated
+        # 旋转该列图片
+        rotated_col = column_img.rotate(ROTATION_ANGLE, Image.BICUBIC, expand=True)
+
+        # 计算 expand 导致的偏移补偿
+        # rotate(expand=True) 会扩大画布，新画布的中心 = 旋转后内容的中心
+        # 需要补偿因扩大而产生的偏移
+        cw, ch = column_img.size
+        rw, rh = rotated_col.size
+        # 原始中心在旋转后的位置不变，但画布尺寸变了
+        # 偏移 = (新尺寸 - 旧尺寸) / 2
+        offset_x = (rw - cw) / 2
+        offset_y = (rh - ch) / 2
+
+        paste_x = int(rotated_x - offset_x)
+        paste_y = int(rotated_y - offset_y)
+
+        canvas.paste(rotated_col, (paste_x, paste_y), rotated_col)
 
 
 # ============================================================
@@ -353,23 +384,10 @@ def create_cover(
         # 2. 创建背景（纯色 + 黑色渐变遮罩）
         canvas = create_background(CANVAS_WIDTH, CANVAS_HEIGHT, bg_color)
 
-        # 3. 创建旋转海报网格
-        poster_grid = create_rotated_poster_grid(poster_files)
-
-        # 4. 将海报网格放置到画布右侧
-        # 模板中容器原始尺寸 195×462（设计稿），旋转中心在容器中心
-        # 容器左上角在画布坐标 (223.57, -95)（设计稿）
-        # 旋转中心 = 容器左上角 + 容器尺寸/2
-        orig_w = 195 * SCALE
-        orig_h = 462 * SCALE
-        cx = 223.57 * SCALE + orig_w / 2  # 容器中心 X
-        cy = -95 * SCALE + orig_h / 2     # 容器中心 Y
-
-        # PIL rotate(expand=True) 后，旋转后图片的中心 = (rotated.width/2, rotated.height/2)
-        # 将旋转后图片的中心对齐到画布上的容器中心
-        grid_x = int(cx - poster_grid.width / 2)
-        grid_y = int(cy - poster_grid.height / 2)
-        canvas.paste(poster_grid, (grid_x, grid_y), poster_grid)
+        # 3. 创建旋转海报网格并放置到画布
+        # .pen 中旋转以元素左上角 (x=223.57, y=-95) 为原点
+        # 使用仿射变换实现，直接将各列海报旋转后粘贴到画布
+        _place_rotated_grid(canvas, poster_files)
 
         # 5. 绘制中英文标题
         canvas = draw_title(canvas, title_zh, title_en, zh_font_path, en_font_path)
