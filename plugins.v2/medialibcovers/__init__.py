@@ -33,7 +33,7 @@ class MediaLibCovers(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.4.0"
+    plugin_version = "1.4.1"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "medialibcovers_"
@@ -767,7 +767,7 @@ class MediaLibCovers(_PluginBase):
                 f"[HOST]emby/Items/?api_key=[APIKEY]"
                 f"&ParentId={boxset_id}"
                 f"&IncludeItemTypes=Movie,Series"
-                f"&SortBy=Random&Limit=3"
+                f"&SortBy=Random&Limit=1"
             )
             res = service.instance.get_data(url=url)
             if res:
