@@ -33,7 +33,7 @@ class MediaLibCovers(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.3.5"
+    plugin_version = "1.4.0"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "medialibcovers_"
@@ -720,13 +720,30 @@ class MediaLibCovers(_PluginBase):
         subdir = self._covers_path / library_name
         subdir.mkdir(parents=True, exist_ok=True)
 
-        downloaded = 0
+        # 收集可下载的项目（展开 BoxSet 为其子项目）
+        poster_items = []
         for item in items:
+            if len(poster_items) >= 20:
+                break
+            item_type = item.get("Type", "")
+            if item_type == "BoxSet":
+                # BoxSet: 获取其子项目的海报
+                children = self._get_boxset_children(service, item["Id"])
+                poster_items.extend(children)
+            else:
+                poster_items.append(item)
+
+        if not poster_items:
+            logger.warning(f"媒体库 {library_name} 展开后无可用海报项目")
+            return
+
+        downloaded = 0
+        for item in poster_items:
             if downloaded >= 9:
                 break
 
             item_id = item["Id"]
-            tag = (item.get("ImageTags") or {}).get("Primary") or item.get("PrimaryImageTag") or ""
+            tag = (item.get("ImageTags") or {}).get("Primary", "")
             image_url = f"[HOST]emby/Items/{item_id}/Images/Primary?api_key=[APIKEY]"
             if tag:
                 image_url += f"&tag={tag}"
@@ -738,10 +755,30 @@ class MediaLibCovers(_PluginBase):
                     filepath = subdir / f"{downloaded}.jpg"
                     with open(filepath, "wb") as f:
                         f.write(res.content)
-                else:
-                    logger.debug(f"跳过无图片项目: {item.get('Name')}")
             except Exception as e:
                 logger.warning(f"下载海报失败: {e}")
+
+        logger.info(f"媒体库 {library_name} 成功下载 {downloaded} 张海报")
+
+    def _get_boxset_children(self, service, boxset_id: str) -> list:
+        """获取 BoxSet 的子项目（电影/剧集）"""
+        try:
+            url = (
+                f"[HOST]emby/Items/?api_key=[APIKEY]"
+                f"&ParentId={boxset_id}"
+                f"&IncludeItemTypes=Movie,Series"
+                f"&SortBy=Random&Limit=3"
+            )
+            res = service.instance.get_data(url=url)
+            if res:
+                items = res.json().get("Items", [])
+                return [
+                    item for item in items
+                    if item.get("ImageTags") and item["ImageTags"].get("Primary")
+                ]
+        except Exception as e:
+            logger.debug(f"获取 BoxSet {boxset_id} 子项目失败: {e}")
+        return []
 
     def _set_library_image(self, service, library, image_base64: str) -> bool:
         """设置媒体库封面"""
