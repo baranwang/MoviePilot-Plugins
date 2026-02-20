@@ -52,9 +52,6 @@ COL_POSITIONS = [
     (136 * SCALE, 64 * SCALE),    # 第 3 列 (Frame 13): x=136, y=64
 ]
 
-# 海报网格容器在画布中的基础偏移 (基于 .pen 中 Frame 13 的 x, y)
-GRID_BASE_X = 223.57 * SCALE
-GRID_BASE_Y = -95 * SCALE
 
 # 文字位置（设计稿坐标 × SCALE）
 TEXT_ZH_POS = (24 * SCALE, 56 * SCALE)     # 中文标题位置
@@ -360,9 +357,18 @@ def create_cover(
         poster_grid = create_rotated_poster_grid(poster_files)
 
         # 4. 将海报网格放置到画布右侧
-        # 基于 template.pen 中的位置（Frame 13 外层容器）
-        grid_x = int(GRID_BASE_X) - poster_grid.width // 4
-        grid_y = int(GRID_BASE_Y)
+        # 模板中容器原始尺寸 195×462（设计稿），旋转中心在容器中心
+        # 容器左上角在画布坐标 (223.57, -95)（设计稿）
+        # 旋转中心 = 容器左上角 + 容器尺寸/2
+        orig_w = 195 * SCALE
+        orig_h = 462 * SCALE
+        cx = 223.57 * SCALE + orig_w / 2  # 容器中心 X
+        cy = -95 * SCALE + orig_h / 2     # 容器中心 Y
+
+        # PIL rotate(expand=True) 后，旋转后图片的中心 = (rotated.width/2, rotated.height/2)
+        # 将旋转后图片的中心对齐到画布上的容器中心
+        grid_x = int(cx - poster_grid.width / 2)
+        grid_y = int(cy - poster_grid.height / 2)
         canvas.paste(poster_grid, (grid_x, grid_y), poster_grid)
 
         # 5. 绘制中英文标题

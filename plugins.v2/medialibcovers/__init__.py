@@ -23,20 +23,20 @@ from app.plugins import _PluginBase
 from app.schemas.types import EventType
 from app.utils.http import RequestUtils
 
-from app.plugins.mediacovergenerator.cover_style import create_cover
+from app.plugins.medialibcovers.cover_style import create_cover
 
 
-class MediaCoverGenerator(_PluginBase):
+class MediaLibCovers(_PluginBase):
     """媒体库封面生成插件"""
 
     # 插件元数据
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.0.3"
+    plugin_version = "1.1.0"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
-    plugin_config_prefix = "mediacovergenerator_"
+    plugin_config_prefix = "medialibcovers_"
     plugin_order = 2
     auth_level = 1
 
@@ -136,7 +136,7 @@ class MediaCoverGenerator(_PluginBase):
         if self._enabled and self._cron:
             return [
                 {
-                    "id": "MediaCoverGenerator",
+                    "id": "MediaLibCovers",
                     "name": "媒体库封面更新服务",
                     "trigger": CronTrigger.from_crontab(self._cron),
                     "func": self._update_all_libraries,
@@ -444,7 +444,7 @@ class MediaCoverGenerator(_PluginBase):
             data_font_dir,
         ]
         try:
-            import app.plugins.mediacovergenerator.cover_style as _cs
+            import app.plugins.medialibcovers.cover_style as _cs
             candidate_dirs.insert(1, Path(_cs.__file__).parent / "fonts")
         except Exception:
             pass
@@ -480,7 +480,7 @@ class MediaCoverGenerator(_PluginBase):
         """从 GitHub 下载字体文件"""
         target = target_dir / name
         base_urls = [
-            f"https://github.com/baranwang/MoviePilot-Plugins/raw/main/plugins.v2/mediacovergenerator/fonts/{name}",
+            f"https://github.com/baranwang/MoviePilot-Plugins/raw/main/plugins.v2/medialibcovers/fonts/{name}",
             f"https://github.com/justzerock/MoviePilot-Plugins/raw/main/plugins.v2/mediacovergenerator/fonts/{name}",
         ]
 
@@ -670,8 +670,7 @@ class MediaCoverGenerator(_PluginBase):
             url = (
                 f"[HOST]emby/Items/?api_key=[APIKEY]"
                 f"&ParentId={library_id}&SortBy=Random&Limit={limit}"
-                f"&IncludeItemTypes=Movie,Series&Recursive=True"
-                f"&SortOrder=Descending"
+                f"&Recursive=True&SortOrder=Descending"
             )
 
             res = service.instance.get_data(url=url)
