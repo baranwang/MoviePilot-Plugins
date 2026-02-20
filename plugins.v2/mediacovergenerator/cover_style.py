@@ -224,7 +224,7 @@ def create_rotated_poster_grid(poster_paths: List[str]) -> Image.Image:
         container.paste(column_img, (cx, cy), column_img)
 
     # 旋转整个容器
-    rotated = container.rotate(-ROTATION_ANGLE, Image.BICUBIC, expand=True)
+    rotated = container.rotate(ROTATION_ANGLE, Image.BICUBIC, expand=True)
 
     return rotated
 
@@ -232,6 +232,34 @@ def create_rotated_poster_grid(poster_paths: List[str]) -> Image.Image:
 # ============================================================
 # 文字绘制
 # ============================================================
+
+def _load_font(font_path: str, size: int, label: str) -> ImageFont.FreeTypeFont:
+    """
+    加载字体文件，带详细日志和健壮的 fallback
+    """
+    # 1. 尝试指定路径
+    if font_path and os.path.isfile(font_path):
+        try:
+            font = ImageFont.truetype(font_path, size)
+            logger.debug(f"字体加载成功: {label} -> {font_path}")
+            return font
+        except Exception as e:
+            logger.warning(f"字体文件存在但加载失败: {label} -> {font_path}, 错误: {e}")
+    else:
+        logger.warning(f"字体文件不存在: {label} -> {font_path}")
+
+    # 2. Fallback: Pillow 10.1+ 支持 load_default(size=N)
+    try:
+        font = ImageFont.load_default(size=size)
+        logger.info(f"使用 Pillow 内置字体 (size={size}): {label}")
+        return font
+    except TypeError:
+        pass
+
+    # 3. 最终 fallback
+    logger.warning(f"无法加载合适字体，使用默认小字体: {label}")
+    return ImageFont.load_default()
+
 
 def draw_title(
     image: Image.Image,
@@ -248,11 +276,7 @@ def draw_title(
     draw = ImageDraw.Draw(text_layer)
 
     # 中文标题
-    try:
-        zh_font = ImageFont.truetype(zh_font_path, FONT_SIZE_ZH)
-    except Exception:
-        zh_font = ImageFont.load_default()
-
+    zh_font = _load_font(zh_font_path, FONT_SIZE_ZH, "中文字体")
     draw.text(
         TEXT_ZH_POS,
         title_zh,
@@ -262,11 +286,7 @@ def draw_title(
 
     # 英文副标题
     if title_en:
-        try:
-            en_font = ImageFont.truetype(en_font_path, FONT_SIZE_EN)
-        except Exception:
-            en_font = ImageFont.load_default()
-
+        en_font = _load_font(en_font_path, FONT_SIZE_EN, "英文字体")
         draw.text(
             TEXT_EN_POS,
             title_en,

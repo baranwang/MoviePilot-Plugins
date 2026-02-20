@@ -33,7 +33,7 @@ class MediaCoverGenerator(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "mediacovergenerator_"
@@ -427,11 +427,46 @@ class MediaCoverGenerator(_PluginBase):
     # ============================================================
 
     def _get_font_paths(self) -> Tuple[str, str]:
-        """获取字体文件路径（使用插件内置字体）"""
-        plugin_dir = Path(__file__).parent
-        zh_font = plugin_dir / "fonts" / "NotoSansTC-Bold.ttf"
-        en_font = plugin_dir / "fonts" / "Lexend-SemiBold.ttf"
-        return (str(zh_font), str(en_font))
+        """
+        获取字体文件路径
+
+        搜索多个可能的位置：
+        1. 插件源码目录（__file__ 所在目录）
+        2. cover_style 模块所在目录
+        3. 插件数据目录
+        """
+        zh_name = "NotoSansTC-Bold.ttf"
+        en_name = "Lexend-SemiBold.ttf"
+
+        # 候选目录（按优先级）
+        import app.plugins.mediacovergenerator.cover_style as _cs
+        candidate_dirs = [
+            Path(__file__).parent / "fonts",
+            Path(_cs.__file__).parent / "fonts",
+            self.get_data_path() / "fonts",
+        ]
+
+        zh_font = None
+        en_font = None
+
+        for d in candidate_dirs:
+            zh_path = d / zh_name
+            en_path = d / en_name
+            if zh_font is None and zh_path.is_file():
+                zh_font = str(zh_path)
+                logger.info(f"找到中文字体: {zh_font}")
+            if en_font is None and en_path.is_file():
+                en_font = str(en_path)
+                logger.info(f"找到英文字体: {en_font}")
+
+        if not zh_font:
+            zh_font = str(candidate_dirs[0] / zh_name)
+            logger.warning(f"中文字体文件未找到，尝试路径: {zh_font}")
+        if not en_font:
+            en_font = str(candidate_dirs[0] / en_name)
+            logger.warning(f"英文字体文件未找到，尝试路径: {en_font}")
+
+        return (zh_font, en_font)
 
     # ============================================================
     # 标题配置
