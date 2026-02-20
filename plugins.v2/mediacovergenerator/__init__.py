@@ -190,13 +190,11 @@ class MediaCoverGenerator(_PluginBase):
                                 "props": {"cols": 12, "md": 6},
                                 "content": [
                                     {
-                                        "component": "VTextField",
+                                        "component": "VCronField",
                                         "props": {
                                             "model": "cron",
                                             "label": "执行周期",
                                             "placeholder": "0 0 * * *",
-                                            "hint": "Cron 表达式，如 '0 0 * * *' 每天零点",
-                                            "persistentHint": True,
                                         },
                                     }
                                 ],
@@ -430,43 +428,92 @@ class MediaCoverGenerator(_PluginBase):
         """
         获取字体文件路径
 
-        搜索多个可能的位置：
-        1. 插件源码目录（__file__ 所在目录）
-        2. cover_style 模块所在目录
-        3. 插件数据目录
+        1. 搜索本地候选目录并验证可用性
+        2. 找不到或不可用则从 GitHub 下载到数据目录
         """
         zh_name = "NotoSansTC-Bold.ttf"
         en_name = "Lexend-SemiBold.ttf"
 
+        # 数据目录下的字体目录
+        data_font_dir = self.get_data_path() / "fonts"
+        data_font_dir.mkdir(parents=True, exist_ok=True)
+
         # 候选目录（按优先级）
-        import app.plugins.mediacovergenerator.cover_style as _cs
         candidate_dirs = [
             Path(__file__).parent / "fonts",
-            Path(_cs.__file__).parent / "fonts",
-            self.get_data_path() / "fonts",
+            data_font_dir,
+        ]
+        try:
+            import app.plugins.mediacovergenerator.cover_style as _cs
+            candidate_dirs.insert(1, Path(_cs.__file__).parent / "fonts")
+        except Exception:
+            pass
+
+        zh_font = self._find_valid_font(zh_name, candidate_dirs)
+        en_font = self._find_valid_font(en_name, candidate_dirs)
+
+        # 找不到或不可用则下载
+        if not zh_font:
+            zh_font = self._download_font(zh_name, data_font_dir)
+        if not en_font:
+            en_font = self._download_font(en_name, data_font_dir)
+
+        logger.info(f"字体路径 - 中文: {zh_font}, 英文: {en_font}")
+        return (zh_font, en_font)
+
+    @staticmethod
+    def _find_valid_font(name: str, dirs: list) -> Optional[str]:
+        """在候选目录中搜索字体文件并验证能被 PIL 加载"""
+        from PIL import ImageFont
+        for d in dirs:
+            path = d / name
+            if path.is_file():
+                try:
+                    ImageFont.truetype(str(path), 12)
+                    logger.info(f"找到有效字体: {path}")
+                    return str(path)
+                except Exception as e:
+                    logger.warning(f"字体文件无效（可能是 Git LFS 指针）: {path}, 错误: {e}")
+        return None
+
+    def _download_font(self, name: str, target_dir: Path) -> str:
+        """从 GitHub 下载字体文件"""
+        target = target_dir / name
+        base_urls = [
+            f"https://github.com/baranwang/MoviePilot-Plugins/raw/main/plugins.v2/mediacovergenerator/fonts/{name}",
+            f"https://github.com/justzerock/MoviePilot-Plugins/raw/main/plugins.v2/mediacovergenerator/fonts/{name}",
         ]
 
-        zh_font = None
-        en_font = None
+        # 尝试通过 GitHub 代理加速
+        proxy_hosts = [
+            None,  # 直连
+            "https://mirror.ghproxy.com/",
+            "https://ghproxy.cc/",
+        ]
 
-        for d in candidate_dirs:
-            zh_path = d / zh_name
-            en_path = d / en_name
-            if zh_font is None and zh_path.is_file():
-                zh_font = str(zh_path)
-                logger.info(f"找到中文字体: {zh_font}")
-            if en_font is None and en_path.is_file():
-                en_font = str(en_path)
-                logger.info(f"找到英文字体: {en_font}")
+        from PIL import ImageFont
+        for base_url in base_urls:
+            for proxy in proxy_hosts:
+                url = f"{proxy}{base_url}" if proxy else base_url
+                try:
+                    logger.info(f"正在下载字体 {name}: {url}")
+                    response = RequestUtils(timeout=30).get_res(url)
+                    if response and response.status_code == 200 and len(response.content) > 1000:
+                        target.write_bytes(response.content)
+                        # 验证下载的文件是否有效
+                        try:
+                            ImageFont.truetype(str(target), 12)
+                            logger.info(f"字体下载成功: {name} -> {target} ({len(response.content)} bytes)")
+                            return str(target)
+                        except Exception:
+                            logger.warning(f"下载的字体文件无效，跳过: {url}")
+                            target.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"字体下载失败 {url}: {e}")
+                    continue
 
-        if not zh_font:
-            zh_font = str(candidate_dirs[0] / zh_name)
-            logger.warning(f"中文字体文件未找到，尝试路径: {zh_font}")
-        if not en_font:
-            en_font = str(candidate_dirs[0] / en_name)
-            logger.warning(f"英文字体文件未找到，尝试路径: {en_font}")
-
-        return (zh_font, en_font)
+        logger.error(f"字体 {name} 下载失败，所有源均不可用")
+        return str(target)  # 返回预期路径，让后续逻辑走 fallback
 
     # ============================================================
     # 标题配置
@@ -603,7 +650,7 @@ class MediaCoverGenerator(_PluginBase):
                 if library["Name"] and library_id:
                     lib_items.append(
                         {
-                            "name": f"{server}: {library['Name']}",
+                            "title": f"{server}: {library['Name']}",
                             "value": f"{server}-{library_id}",
                         }
                     )
