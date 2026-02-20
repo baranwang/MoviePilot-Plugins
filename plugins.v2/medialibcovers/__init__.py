@@ -33,7 +33,7 @@ class MediaLibCovers(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.3.2"
+    plugin_version = "1.3.3"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "medialibcovers_"
@@ -689,10 +689,8 @@ class MediaLibCovers(_PluginBase):
             items = []
             if res:
                 all_items = res.json().get("Items", [])
-                logger.info(
-                    f"类型过滤查询返回 {len(all_items)} 项: "
-                    f"{[f'{it.get(\"Name\")}({it.get(\"Type\")})' for it in all_items[:5]]}"
-                )
+                preview = [f"{it.get('Name')}({it.get('Type')})" for it in all_items[:5]]
+                logger.info(f"类型过滤查询返回 {len(all_items)} 项: {preview}")
                 items = [
                     item for item in all_items
                     if item.get("ImageTags") and item["ImageTags"].get("Primary")
@@ -705,10 +703,11 @@ class MediaLibCovers(_PluginBase):
                 res = service.instance.get_data(url=base_url)
                 if res:
                     all_items = res.json().get("Items", [])
-                    logger.info(
-                        f"无类型过滤查询返回 {len(all_items)} 项: "
-                        f"{[f'{it.get(\"Name\")}({it.get(\"Type\")},img={bool(it.get(\"ImageTags\",{}).get(\"Primary\"))})' for it in all_items[:5]]}"
-                    )
+                    preview = [
+                        f"{it.get('Name')}({it.get('Type')},img={bool(it.get('ImageTags', {}).get('Primary'))})"
+                        for it in all_items[:5]
+                    ]
+                    logger.info(f"无类型过滤查询返回 {len(all_items)} 项: {preview}")
                     items = [
                         item for item in all_items
                         if item.get("ImageTags") and item["ImageTags"].get("Primary")
