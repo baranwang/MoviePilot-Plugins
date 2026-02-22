@@ -48,6 +48,9 @@ class Cd2Api:
         self._token_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:10]
         self._token_length = len(token)
         self._token_root = "/"
+        self._token_info_state = "unknown"
+        self._token_info_name = ""
+        self._token_allow_list_count: Optional[int] = None
         self._auth_failed_logged = False
         self._probe_system_info()
         self._init_token_root()
@@ -118,8 +121,10 @@ class Cd2Api:
     def _init_token_root(self):
         try:
             token_info = self._stub.GetApiTokenInfo(CloudDrive_pb2.StringValue(value=self._api_key))
+            self._token_info_state = "ok"
             info_token = self._normalize_api_key(getattr(token_info, "token", "") or "")
             info_name = (getattr(token_info, "friendly_name", "") or "").strip()
+            self._token_info_name = info_name
             if not info_token and not info_name:
                 logger.warning(
                     "【Cd2Disk】GetApiTokenInfo 未返回有效 token 信息，可能不是当前实例创建的 token"
@@ -128,6 +133,11 @@ class Cd2Api:
             permissions = getattr(token_info, "permissions", None)
             if permissions and hasattr(permissions, "allow_list") and not permissions.allow_list:
                 logger.warning("【Cd2Disk】当前 API key 未授予目录读取权限 allow_list，插件将无法浏览文件")
+            if permissions and hasattr(permissions, "allow_list"):
+                try:
+                    self._token_allow_list_count = len(permissions.allow_list)
+                except Exception:
+                    self._token_allow_list_count = None
 
             token_root = self._normalize_path(getattr(token_info, "rootDir", "") or "/")
             if token_root != "/":
@@ -135,18 +145,32 @@ class Cd2Api:
             self._token_root = token_root or "/"
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.UNAUTHENTICATED:
+                self._token_info_state = "unauthenticated"
                 logger.warning(
-                    "【Cd2Disk】无法通过 GetApiTokenInfo 校验当前 token，后续将继续尝试授权调用（可能是 JWT 而非 API token）"
+                    "【Cd2Disk】无法通过 GetApiTokenInfo 校验当前 token，请确认该 key 在当前实例有效"
                 )
                 return
             if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                self._token_info_state = "unimplemented"
                 logger.debug("【Cd2Disk】当前 CloudDrive2 版本未提供 GetApiTokenInfo，空间统计将回退到根路径")
                 return
+            self._token_info_state = "error"
             logger.debug(f"【Cd2Disk】读取 API key rootDir 失败，回退到 '/': {e}")
         except Exception as e:
+            self._token_info_state = "error"
             logger.debug(f"【Cd2Disk】读取 API key rootDir 失败，回退到 '/': {e}")
 
     def _preflight_authorized_access(self):
+        try:
+            self._call_authed("GetAccountStatus", empty_pb2.Empty())
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNAUTHENTICATED:
+                raise RuntimeError(
+                    f"CloudDrive2 鉴权失败: endpoint={self._origin_host}, token_fp={self._token_fingerprint}, "
+                    f"token_info={self._token_info_state}, 请确认 token 来自当前实例且未过期未删除"
+                ) from e
+            logger.debug(f"【Cd2Disk】账户状态预检跳过: {self._rpc_error_text(e)}")
+
         target = self._token_root or "/"
         try:
             self._list_cloud_files(target, force_refresh=False)
@@ -155,10 +179,13 @@ class Cd2Api:
             if code == grpc.StatusCode.UNAUTHENTICATED:
                 raise RuntimeError(
                     f"CloudDrive2 鉴权失败: endpoint={self._origin_host}, token_fp={self._token_fingerprint}, "
-                    "请确认 token 来自当前实例且未过期未删除"
+                    f"token_info={self._token_info_state}, 请确认 token 来自当前实例且未过期未删除"
                 ) from e
             if code == grpc.StatusCode.PERMISSION_DENIED:
-                raise RuntimeError("CloudDrive2 API key 缺少目录读取权限 allow_list") from e
+                raise RuntimeError(
+                    f"CloudDrive2 API key 缺少目录读取权限 allow_list: root={target}, "
+                    f"allow_list_count={self._token_allow_list_count}"
+                ) from e
             logger.debug(f"【Cd2Disk】初始化预检跳过: {self._rpc_error_text(e)}")
 
     def _to_cloud_path(self, path: str) -> str:
