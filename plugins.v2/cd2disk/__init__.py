@@ -71,7 +71,7 @@ class Cd2Disk(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png"
     # 插件版本
-    plugin_version = "0.1.2"
+    plugin_version = "0.1.4"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -220,15 +220,15 @@ class Cd2Disk(_PluginBase):
                                             },
                                             {
                                                 "component": "div",
-                                                "text": "• 鉴权方式为 Authorization: Bearer <API key>",
+                                                "text": "• 请填写 CloudDrive2 服务地址与 API key",
                                             },
                                             {
                                                 "component": "div",
-                                                "text": "• 插件已内置 clouddrive.proto 生成代码，无需安装 clouddrive 包",
+                                                "text": "• 请确认 API key 具备目标目录访问权限",
                                             },
                                             {
                                                 "component": "div",
-                                                "text": "• 运行环境需具备 grpcio 与 protobuf 运行时",
+                                                "text": "• 如连接失败，请先在 CloudDrive2 中测试该 API key",
                                             },
                                         ],
                                     },

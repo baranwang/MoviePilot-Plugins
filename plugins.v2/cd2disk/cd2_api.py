@@ -38,6 +38,7 @@ class Cd2Api:
         token = (api_key or "").strip()
         if not token:
             raise RuntimeError("CloudDrive2 API key 不能为空")
+        self._api_key = token
         self._metadata: List[Tuple[str, str]] = [("authorization", f"Bearer {token}")]
 
     @staticmethod
@@ -515,8 +516,20 @@ class Cd2Api:
         used = 0
         targets: List[str] = []
 
+        base_root = "/"
         try:
-            roots = self._list_cloud_files("/", force_refresh=False)
+            token_info = self._stub.GetApiTokenInfo(
+                CloudDrive_pb2.StringValue(value=self._api_key)
+            )
+            token_root = self._normalize_dir_path(getattr(token_info, "rootDir", "") or "/")
+            if token_root:
+                base_root = token_root
+                targets.append(token_root)
+        except Exception as e:
+            logger.debug(f"【Cd2Disk】读取 API key rootDir 失败，回退到 '/': {e}")
+
+        try:
+            roots = self._list_cloud_files(base_root, force_refresh=False)
             for one in roots:
                 full_path = getattr(one, "fullPathName", "")
                 if not full_path:
@@ -528,11 +541,11 @@ class Cd2Api:
                 normalized = self._normalize_dir_path(str(full_path))
                 if normalized != "/" and normalized not in targets:
                     targets.append(normalized)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"【Cd2Disk】枚举空间统计路径失败: {base_root}, {e}")
 
         if not targets:
-            targets = ["/"]
+            targets = [base_root]
 
         for target in targets:
             try:
@@ -542,6 +555,17 @@ class Cd2Api:
                 )
                 total += int(getattr(space, "totalSpace", 0) or 0)
                 used += int(getattr(space, "usedSpace", 0) or 0)
+            except grpc.RpcError as e:
+                code = e.code()
+                if code in (
+                    grpc.StatusCode.PERMISSION_DENIED,
+                    grpc.StatusCode.UNAUTHENTICATED,
+                    grpc.StatusCode.NOT_FOUND,
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                ):
+                    logger.debug(f"【Cd2Disk】跳过无权限或无效路径的空间统计: {target}, {code}")
+                else:
+                    logger.warning(f"【Cd2Disk】获取空间信息失败: {target}, {e}")
             except Exception as e:
                 logger.warning(f"【Cd2Disk】获取空间信息失败: {target}, {e}")
 
