@@ -172,7 +172,11 @@ class Cd2Disk(_PluginBase):
                                             },
                                             {
                                                 "component": "div",
-                                                "text": "• 运行环境需具备 grpcio 与 CloudDrive2 的 protobuf Python 模块",
+                                                "text": "• 插件已内置 clouddrive.proto 生成代码，无需安装 clouddrive 包",
+                                            },
+                                            {
+                                                "component": "div",
+                                                "text": "• 运行环境需具备 grpcio 与 protobuf 运行时",
                                             },
                                         ],
                                     },

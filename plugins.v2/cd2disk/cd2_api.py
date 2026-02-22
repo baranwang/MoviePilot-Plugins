@@ -5,7 +5,8 @@ from urllib.request import Request, urlopen
 
 import grpc
 
-from clouddrive.proto import CloudDrive_pb2, CloudDrive_pb2_grpc
+from . import clouddrive_pb2 as CloudDrive_pb2
+from . import clouddrive_pb2_grpc as CloudDrive_pb2_grpc
 
 from app.core.config import settings
 from app.log import logger
