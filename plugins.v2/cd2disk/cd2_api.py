@@ -37,7 +37,10 @@ class Cd2Api:
         self._origin_scheme = scheme
         self._origin_host = host
 
-        self._channel = grpc.insecure_channel(host)
+        self._channel = grpc.insecure_channel(host, options=[
+            ('grpc.max_send_message_length', 20 * 1024 * 1024),
+            ('grpc.max_receive_message_length', 20 * 1024 * 1024),
+        ])
         self._stub = CloudDrive_pb2_grpc.CloudDriveFileSrvStub(self._channel)
         token = self._normalize_api_key(api_key)
         if not token:
@@ -710,7 +713,7 @@ class Cd2Api:
             offset = 0
             with open(local_path, "rb") as f:
                 while True:
-                    data = f.read(8 * 1024 * 1024)
+                    data = f.read(3 * 1024 * 1024)
                     if not data:
                         break
                     write_resp = self._call_authed(
