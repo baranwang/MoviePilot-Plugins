@@ -35,7 +35,7 @@
     "name": "CloudDrive2 储存",
     "description": "接入 CloudDrive2 作为 MoviePilot 储存模块，支持浏览、上传、下载、重命名、删除与空间统计",
     "labels": "网盘,CloudDrive2,储存",
-    "version": "0.1.10",
+    "version": "0.1.11",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png",
     "author": "baranwang",
     "level": 2,
@@ -50,7 +50,8 @@
       "v0.1.7": "增强鉴权定位：清洗隐藏字符与内部空白，启动时探测服务可达性，并输出 endpoint/token 脱敏诊断信息",
       "v0.1.8": "增强鉴权预检：扩展鉴权头回退方案并在初始化执行受保护 RPC 验证，明确区分 token、权限与端点问题",
       "v0.1.9": "与官方文档对齐：统一仅使用 Authorization: Bearer <token> 作为鉴权头",
-      "v0.1.10": "增强鉴权预检与诊断：先校验账户授权状态并输出 token_info 状态，减少 token 与权限问题误判"
+      "v0.1.10": "增强鉴权预检与诊断：先校验账户授权状态并输出 token_info 状态，减少 token 与权限问题误判",
+      "v0.1.11": "修复空间统计重复累加：优先使用根路径 GetSpaceInfo，回退子目录时按 (total, used) 去重，避免显示为 PB 级别"
     }
   },
   "EmbyMissingSubscribe": {

@@ -712,16 +712,28 @@ class Cd2Api:
                     pass
 
     def usage(self) -> Optional[StorageUsage]:
+        base_root = self._token_root or "/"
+
+        # 优先尝试根路径获取空间信息
+        try:
+            space = self._call_authed("GetSpaceInfo", CloudDrive_pb2.FileRequest(path=base_root))
+            total = int(getattr(space, "totalSpace", 0) or 0)
+            used = int(getattr(space, "usedSpace", 0) or 0)
+            if total > 0 or used > 0:
+                return StorageUsage(total=total, used=used)
+        except grpc.RpcError as e:
+            code = e.code()
+            if code == grpc.StatusCode.UNAUTHENTICATED:
+                self._log_auth_error_once("获取空间信息", base_root, e)
+                return None
+            logger.debug(f"【Cd2Disk】根路径空间统计失败，尝试子目录: {base_root}, {e}")
+        except Exception as e:
+            logger.debug(f"【Cd2Disk】根路径空间统计失败，尝试子目录: {base_root}, {e}")
+
+        # 根路径失败时回退到子目录，使用去重避免重复累加
         total = 0
         used = 0
-        targets: List[str] = []
-
-        base_root = self._token_root or "/"
-        try:
-            targets.append(base_root)
-        except Exception:
-            pass
-
+        seen_spaces: set = set()
         try:
             roots = self._list_cloud_files(base_root, force_refresh=False)
             for one in roots:
@@ -733,33 +745,35 @@ class Cd2Api:
                     continue
 
                 normalized = self._normalize_dir_path(str(full_path))
-                if normalized != "/" and normalized not in targets:
-                    targets.append(normalized)
+                if normalized == "/":
+                    continue
+
+                try:
+                    space = self._call_authed("GetSpaceInfo", CloudDrive_pb2.FileRequest(path=normalized))
+                    t = int(getattr(space, "totalSpace", 0) or 0)
+                    u = int(getattr(space, "usedSpace", 0) or 0)
+                    # 去重：相同 (total, used) 认为是同一存储空间
+                    key = (t, u)
+                    if key not in seen_spaces and (t > 0 or u > 0):
+                        seen_spaces.add(key)
+                        total += t
+                        used += u
+                except grpc.RpcError as e:
+                    code = e.code()
+                    if code == grpc.StatusCode.UNAUTHENTICATED:
+                        self._log_auth_error_once("获取空间信息", normalized, e)
+                    elif code in (
+                        grpc.StatusCode.PERMISSION_DENIED,
+                        grpc.StatusCode.NOT_FOUND,
+                        grpc.StatusCode.INVALID_ARGUMENT,
+                    ):
+                        logger.debug(f"【Cd2Disk】跳过无权限或无效路径的空间统计: {normalized}, {code}")
+                    else:
+                        logger.warning(f"【Cd2Disk】获取空间信息失败: {normalized}, {e}")
+                except Exception as e:
+                    logger.warning(f"【Cd2Disk】获取空间信息失败: {normalized}, {e}")
         except Exception as e:
             logger.debug(f"【Cd2Disk】枚举空间统计路径失败: {base_root}, {e}")
-
-        if not targets:
-            targets = [base_root]
-
-        for target in targets:
-            try:
-                space = self._call_authed("GetSpaceInfo", CloudDrive_pb2.FileRequest(path=target))
-                total += int(getattr(space, "totalSpace", 0) or 0)
-                used += int(getattr(space, "usedSpace", 0) or 0)
-            except grpc.RpcError as e:
-                code = e.code()
-                if code == grpc.StatusCode.UNAUTHENTICATED:
-                    self._log_auth_error_once("获取空间信息", target, e)
-                elif code in (
-                    grpc.StatusCode.PERMISSION_DENIED,
-                    grpc.StatusCode.NOT_FOUND,
-                    grpc.StatusCode.INVALID_ARGUMENT,
-                ):
-                    logger.debug(f"【Cd2Disk】跳过无权限或无效路径的空间统计: {target}, {code}")
-                else:
-                    logger.warning(f"【Cd2Disk】获取空间信息失败: {target}, {e}")
-            except Exception as e:
-                logger.warning(f"【Cd2Disk】获取空间信息失败: {target}, {e}")
 
         if total <= 0 and used <= 0:
             return None
