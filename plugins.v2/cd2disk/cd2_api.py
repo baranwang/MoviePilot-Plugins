@@ -711,22 +711,45 @@ class Cd2Api:
                 except Exception:
                     pass
 
+    @staticmethod
+    def _human_size(size_bytes: int) -> str:
+        if size_bytes <= 0:
+            return "0 B"
+        units = ["B", "KB", "MB", "GB", "TB", "PB", "EB"]
+        i = 0
+        value = float(size_bytes)
+        while value >= 1024 and i < len(units) - 1:
+            value /= 1024
+            i += 1
+        return f"{value:.2f} {units[i]}"
+
     def usage(self) -> Optional[StorageUsage]:
         base_root = self._token_root or "/"
+        logger.info(f"【Cd2Disk】开始空间统计, base_root={base_root}")
 
         # 遍历一级子目录，只统计真正的云盘根目录（isCloudRoot=true）
         # 自挂载的目录不是 isCloudRoot，会被自然过滤
         entries: list = []
         try:
             roots = self._list_cloud_files(base_root, force_refresh=False)
+            logger.info(f"【Cd2Disk】根目录下共 {len(roots)} 个子条目")
             for one in roots:
+                name = getattr(one, "name", "") or ""
+                full_path = getattr(one, "fullPathName", "") or ""
+                is_cloud_root = bool(getattr(one, "isCloudRoot", False))
+                is_dir = bool(getattr(one, "isDirectory", False))
+                cloud_api = getattr(one, "CloudAPI", None)
+                cloud_name = getattr(cloud_api, "name", "") if cloud_api else ""
+
                 # 只统计云盘根目录，跳过自挂载/普通目录
-                if not getattr(one, "isCloudRoot", False):
+                if not is_cloud_root:
+                    logger.debug(
+                        f"【Cd2Disk】跳过非云盘根目录: name={name}, path={full_path}, "
+                        f"isDir={is_dir}, isCloudRoot={is_cloud_root}, cloudName={cloud_name}"
+                    )
                     continue
 
-                full_path = getattr(one, "fullPathName", "")
                 if not full_path:
-                    name = getattr(one, "name", "")
                     full_path = f"/{name}" if name else ""
                 if not full_path:
                     continue
@@ -740,8 +763,14 @@ class Cd2Api:
                     t = int(getattr(space, "totalSpace", 0) or 0)
                     u = int(getattr(space, "usedSpace", 0) or 0)
                     f = int(getattr(space, "freeSpace", 0) or 0)
+                    logger.info(
+                        f"【Cd2Disk】云盘空间: name={name}, cloudName={cloud_name}, path={normalized}, "
+                        f"total={self._human_size(t)}, used={self._human_size(u)}, free={self._human_size(f)}"
+                    )
                     if t > 0 or u > 0 or f > 0:
                         entries.append((t, u, f, normalized))
+                    else:
+                        logger.debug(f"【Cd2Disk】跳过空间全为零的云盘: {normalized}")
                 except grpc.RpcError as e:
                     code = e.code()
                     if code == grpc.StatusCode.UNAUTHENTICATED:
@@ -761,16 +790,25 @@ class Cd2Api:
 
         if not entries:
             # 没有 isCloudRoot 的子目录时回退到根路径
+            logger.info("【Cd2Disk】未找到 isCloudRoot 子目录，回退到根路径获取空间")
             try:
                 space = self._call_authed("GetSpaceInfo", CloudDrive_pb2.FileRequest(path=base_root))
                 total = int(getattr(space, "totalSpace", 0) or 0)
                 free = int(getattr(space, "freeSpace", 0) or 0)
                 used = int(getattr(space, "usedSpace", 0) or 0)
+                logger.info(
+                    f"【Cd2Disk】根路径空间: total={self._human_size(total)}, "
+                    f"used={self._human_size(used)}, free={self._human_size(free)}"
+                )
                 if total > 0 or used > 0 or free > 0:
                     available = free if free > 0 else max(total - used, 0)
+                    logger.info(
+                        f"【Cd2Disk】空间统计结果(根路径回退): total={self._human_size(total)}, "
+                        f"available={self._human_size(available)}"
+                    )
                     return StorageUsage(total=total, available=available)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"【Cd2Disk】根路径空间统计也失败: {e}")
             return None
 
         # 按 (total, used) 去重，避免同一存储空间被重复统计
@@ -781,15 +819,26 @@ class Cd2Api:
             if key not in seen:
                 seen.add(key)
                 unique.append((t, u, f, path))
+            else:
+                logger.debug(
+                    f"【Cd2Disk】去重跳过: path={path}, total={self._human_size(t)}, "
+                    f"used={self._human_size(u)} (与已有条目重复)"
+                )
 
         total = sum(t for t, _, _, _ in unique)
         used = sum(u for _, u, _, _ in unique)
         free = sum(f for _, _, f, _ in unique)
 
         if total <= 0 and used <= 0 and free <= 0:
+            logger.warning("【Cd2Disk】所有云盘空间信息均为零")
             return None
 
         available = free if free > 0 else max(total - used, 0)
+        logger.info(
+            f"【Cd2Disk】空间统计结果: {len(unique)} 个云盘, "
+            f"total={self._human_size(total)}, used={self._human_size(used)}, "
+            f"free={self._human_size(free)}, available={self._human_size(available)}"
+        )
         return StorageUsage(total=total, available=available)
 
     def close(self):
