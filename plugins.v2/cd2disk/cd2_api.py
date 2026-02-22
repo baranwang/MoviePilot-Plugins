@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -39,7 +40,10 @@ class Cd2Api:
         if not token:
             raise RuntimeError("CloudDrive2 API key 不能为空")
         self._api_key = token
-        self._metadata: List[Tuple[str, str]] = [("authorization", f"Bearer {token}")]
+        self._metadata_candidates: List[List[Tuple[str, str]]] = self._build_metadata_candidates(token)
+        self._active_metadata_index = 0
+        self._metadata: List[Tuple[str, str]] = self._metadata_candidates[self._active_metadata_index]
+        self._token_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:10]
         self._token_root = "/"
         self._auth_failed_logged = False
         self._init_token_root()
@@ -54,6 +58,48 @@ class Cd2Api:
             token = token[7:].strip()
         return token
 
+    @staticmethod
+    def _build_metadata_candidates(token: str) -> List[List[Tuple[str, str]]]:
+        candidates = [
+            [("authorization", f"Bearer {token}")],
+            [("authorization", token)],
+        ]
+        unique: List[List[Tuple[str, str]]] = []
+        seen = set()
+        for candidate in candidates:
+            key = tuple(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(candidate)
+        return unique
+
+    def _set_active_metadata(self, index: int):
+        if index == self._active_metadata_index:
+            return
+        self._active_metadata_index = index
+        self._metadata = self._metadata_candidates[index]
+        logger.info(f"【Cd2Disk】已切换鉴权头格式 variant={index + 1}, token_fp={self._token_fingerprint}")
+
+    def _call_authed(self, method_name: str, request: Any):
+        rpc = getattr(self._stub, method_name)
+        last_unauth = None
+
+        for index, metadata in enumerate(self._metadata_candidates):
+            try:
+                response = rpc(request, metadata=metadata)
+                self._set_active_metadata(index)
+                return response
+            except grpc.RpcError as e:
+                if e.code() == grpc.StatusCode.UNAUTHENTICATED:
+                    last_unauth = e
+                    continue
+                raise
+
+        if last_unauth:
+            raise last_unauth
+        raise RuntimeError(f"CloudDrive2 调用失败: {method_name}")
+
     def _init_token_root(self):
         try:
             token_info = self._stub.GetApiTokenInfo(CloudDrive_pb2.StringValue(value=self._api_key))
@@ -63,9 +109,10 @@ class Cd2Api:
             self._token_root = token_root or "/"
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.UNAUTHENTICATED:
-                raise RuntimeError(
-                    "CloudDrive2 API key 无效，请填写 CreateToken 生成的原始 token（不要包含 Authorization: Bearer 前缀）"
-                ) from e
+                logger.warning(
+                    "【Cd2Disk】无法通过 GetApiTokenInfo 校验当前 token，后续将继续尝试授权调用（可能是 JWT 而非 API token）"
+                )
+                return
             if e.code() == grpc.StatusCode.UNIMPLEMENTED:
                 logger.debug("【Cd2Disk】当前 CloudDrive2 版本未提供 GetApiTokenInfo，空间统计将回退到根路径")
                 return
@@ -91,7 +138,9 @@ class Cd2Api:
 
     def _log_auth_error_once(self, action: str, target: str, error: grpc.RpcError):
         if not self._auth_failed_logged:
-            logger.error("【Cd2Disk】CloudDrive2 鉴权失败，请检查 API key 是否正确（可直接填 token，无需 Bearer 前缀）")
+            logger.error(
+                f"【Cd2Disk】CloudDrive2 鉴权失败，请检查 API key 或权限设置（token_fp={self._token_fingerprint}）"
+            )
             self._auth_failed_logged = True
         logger.debug(f"【Cd2Disk】{action}失败: {target}, {self._rpc_error_text(error)}")
 
@@ -226,11 +275,25 @@ class Cd2Api:
 
     def _list_cloud_files(self, path: str, force_refresh: bool = False) -> List[Any]:
         req = CloudDrive_pb2.ListSubFileRequest(path=path, forceRefresh=force_refresh)
-        result: List[Any] = []
-        for reply in self._stub.GetSubFiles(req, metadata=self._metadata):
-            for sub_file in reply.subFiles:
-                result.append(sub_file)
-        return result
+        last_unauth = None
+
+        for index, metadata in enumerate(self._metadata_candidates):
+            result: List[Any] = []
+            try:
+                for reply in self._stub.GetSubFiles(req, metadata=metadata):
+                    for sub_file in reply.subFiles:
+                        result.append(sub_file)
+                self._set_active_metadata(index)
+                return result
+            except grpc.RpcError as e:
+                if e.code() == grpc.StatusCode.UNAUTHENTICATED:
+                    last_unauth = e
+                    continue
+                raise
+
+        if last_unauth:
+            raise last_unauth
+        return []
 
     def _resolve_download_url(self, path: str) -> tuple[str, Dict[str, str]]:
         req = CloudDrive_pb2.GetDownloadUrlPathRequest(
@@ -239,7 +302,7 @@ class Cd2Api:
             lazy_read=False,
             get_direct_url=True,
         )
-        info = self._stub.GetDownloadUrlPath(req, metadata=self._metadata)
+        info = self._call_authed("GetDownloadUrlPath", req)
 
         headers: Dict[str, str] = {}
         user_agent = getattr(info, "userAgent", "")
@@ -330,7 +393,7 @@ class Cd2Api:
 
         try:
             req = CloudDrive_pb2.CreateFolderRequest(parentPath=parent_path, folderName=name)
-            resp = self._stub.CreateFolder(req, metadata=self._metadata)
+            resp = self._call_authed("CreateFolder", req)
             if hasattr(resp, "result") and not self._is_success(resp.result):
                 error_msg = getattr(resp.result, "errorMessage", "")
                 logger.error(f"【Cd2Disk】创建目录失败: {target_path}, {error_msg}")
@@ -351,7 +414,7 @@ class Cd2Api:
 
         try:
             req = CloudDrive_pb2.FindFileByPathRequest(path=self._normalize_file_path(target_path))
-            cloud_file = self._stub.FindFileByPath(req, metadata=self._metadata)
+            cloud_file = self._call_authed("FindFileByPath", req)
             if not getattr(cloud_file, "name", "") and not getattr(cloud_file, "fullPathName", ""):
                 return None
             return self._to_file_item(cloud_file)
@@ -377,7 +440,7 @@ class Cd2Api:
     def delete(self, fileitem: FileItem) -> bool:
         path = self._normalize_path(fileitem.path)
         try:
-            resp = self._stub.DeleteFile(CloudDrive_pb2.FileRequest(path=path), metadata=self._metadata)
+            resp = self._call_authed("DeleteFile", CloudDrive_pb2.FileRequest(path=path))
             if not self._is_success(resp):
                 logger.error(f"【Cd2Disk】删除失败: {path}, {getattr(resp, 'errorMessage', '')}")
                 return False
@@ -393,7 +456,7 @@ class Cd2Api:
 
         try:
             req = CloudDrive_pb2.RenameFileRequest(theFilePath=src_path, newName=name)
-            resp = self._stub.RenameFile(req, metadata=self._metadata)
+            resp = self._call_authed("RenameFile", req)
             if not self._is_success(resp):
                 logger.error(
                     f"【Cd2Disk】重命名失败: {src_path} -> {name}, {getattr(resp, 'errorMessage', '')}"
@@ -416,7 +479,7 @@ class Cd2Api:
                 destPath=dst_dir,
                 conflictPolicy=CloudDrive_pb2.MoveFileRequest.Overwrite,
             )
-            resp = self._stub.MoveFile(req, metadata=self._metadata)
+            resp = self._call_authed("MoveFile", req)
             if not self._is_success(resp):
                 logger.error(
                     f"【Cd2Disk】移动失败: {src_path} -> {dst_dir}, {getattr(resp, 'errorMessage', '')}"
@@ -426,9 +489,9 @@ class Cd2Api:
             if target_name != src_name:
                 result_paths = self._result_paths(resp)
                 moved_path = result_paths[0] if result_paths else self._join_path(dst_dir, src_name)
-                rename_resp = self._stub.RenameFile(
+                rename_resp = self._call_authed(
+                    "RenameFile",
                     CloudDrive_pb2.RenameFileRequest(theFilePath=moved_path, newName=target_name),
-                    metadata=self._metadata,
                 )
                 if not self._is_success(rename_resp):
                     logger.error(
@@ -453,7 +516,7 @@ class Cd2Api:
                 destPath=dst_dir,
                 conflictPolicy=CloudDrive_pb2.CopyFileRequest.Overwrite,
             )
-            resp = self._stub.CopyFile(req, metadata=self._metadata)
+            resp = self._call_authed("CopyFile", req)
             if not self._is_success(resp):
                 logger.error(
                     f"【Cd2Disk】复制失败: {src_path} -> {dst_dir}, {getattr(resp, 'errorMessage', '')}"
@@ -463,9 +526,9 @@ class Cd2Api:
             if target_name != src_name:
                 result_paths = self._result_paths(resp)
                 copied_path = result_paths[0] if result_paths else self._join_path(dst_dir, src_name)
-                rename_resp = self._stub.RenameFile(
+                rename_resp = self._call_authed(
+                    "RenameFile",
                     CloudDrive_pb2.RenameFileRequest(theFilePath=copied_path, newName=target_name),
-                    metadata=self._metadata,
                 )
                 if not self._is_success(rename_resp):
                     logger.error(
@@ -524,9 +587,9 @@ class Cd2Api:
 
         file_handle = 0
         try:
-            create_resp = self._stub.CreateFile(
+            create_resp = self._call_authed(
+                "CreateFile",
                 CloudDrive_pb2.CreateFileRequest(parentPath=remote_dir, fileName=target_name),
-                metadata=self._metadata,
             )
             file_handle = int(getattr(create_resp, "fileHandle", 0) or 0)
             if file_handle <= 0:
@@ -539,7 +602,8 @@ class Cd2Api:
                     data = f.read(8 * 1024 * 1024)
                     if not data:
                         break
-                    write_resp = self._stub.WriteToFile(
+                    write_resp = self._call_authed(
+                        "WriteToFile",
                         CloudDrive_pb2.WriteFileRequest(
                             fileHandle=file_handle,
                             startPos=offset,
@@ -547,7 +611,6 @@ class Cd2Api:
                             buffer=data,
                             closeFile=False,
                         ),
-                        metadata=self._metadata,
                     )
                     bytes_written = int(getattr(write_resp, "bytesWritten", len(data)) or 0)
                     if bytes_written != len(data):
@@ -558,9 +621,9 @@ class Cd2Api:
                         return None
                     offset += bytes_written
 
-            close_resp = self._stub.CloseFile(
+            close_resp = self._call_authed(
+                "CloseFile",
                 CloudDrive_pb2.CloseFileRequest(fileHandle=file_handle),
-                metadata=self._metadata,
             )
             if not self._is_success(close_resp):
                 logger.error(f"【Cd2Disk】上传失败，关闭文件失败: {remote_path}")
@@ -574,10 +637,7 @@ class Cd2Api:
         finally:
             if file_handle > 0:
                 try:
-                    self._stub.CloseFile(
-                        CloudDrive_pb2.CloseFileRequest(fileHandle=file_handle),
-                        metadata=self._metadata,
-                    )
+                    self._call_authed("CloseFile", CloudDrive_pb2.CloseFileRequest(fileHandle=file_handle))
                 except Exception:
                     pass
 
@@ -613,17 +673,15 @@ class Cd2Api:
 
         for target in targets:
             try:
-                space = self._stub.GetSpaceInfo(
-                    CloudDrive_pb2.FileRequest(path=target),
-                    metadata=self._metadata,
-                )
+                space = self._call_authed("GetSpaceInfo", CloudDrive_pb2.FileRequest(path=target))
                 total += int(getattr(space, "totalSpace", 0) or 0)
                 used += int(getattr(space, "usedSpace", 0) or 0)
             except grpc.RpcError as e:
                 code = e.code()
-                if code in (
+                if code == grpc.StatusCode.UNAUTHENTICATED:
+                    self._log_auth_error_once("获取空间信息", target, e)
+                elif code in (
                     grpc.StatusCode.PERMISSION_DENIED,
-                    grpc.StatusCode.UNAUTHENTICATED,
                     grpc.StatusCode.NOT_FOUND,
                     grpc.StatusCode.INVALID_ARGUMENT,
                 ):
