@@ -35,11 +35,65 @@ class Cd2Api:
 
         self._channel = grpc.insecure_channel(host)
         self._stub = CloudDrive_pb2_grpc.CloudDriveFileSrvStub(self._channel)
-        token = (api_key or "").strip()
+        token = self._normalize_api_key(api_key)
         if not token:
             raise RuntimeError("CloudDrive2 API key 不能为空")
         self._api_key = token
         self._metadata: List[Tuple[str, str]] = [("authorization", f"Bearer {token}")]
+        self._token_root = "/"
+        self._auth_failed_logged = False
+        self._init_token_root()
+
+    @staticmethod
+    def _normalize_api_key(api_key: str) -> str:
+        token = (api_key or "").strip().strip('"').strip("'")
+        token = token.replace("\r", "").replace("\n", "").strip()
+        if token.lower().startswith("authorization:"):
+            token = token.split(":", 1)[1].strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        return token
+
+    def _init_token_root(self):
+        try:
+            token_info = self._stub.GetApiTokenInfo(CloudDrive_pb2.StringValue(value=self._api_key))
+            token_root = self._normalize_path(getattr(token_info, "rootDir", "") or "/")
+            if token_root != "/":
+                token_root = token_root.rstrip("/")
+            self._token_root = token_root or "/"
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNAUTHENTICATED:
+                raise RuntimeError(
+                    "CloudDrive2 API key 无效，请填写 CreateToken 生成的原始 token（不要包含 Authorization: Bearer 前缀）"
+                ) from e
+            if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+                logger.debug("【Cd2Disk】当前 CloudDrive2 版本未提供 GetApiTokenInfo，空间统计将回退到根路径")
+                return
+            logger.debug(f"【Cd2Disk】读取 API key rootDir 失败，回退到 '/': {e}")
+        except Exception as e:
+            logger.debug(f"【Cd2Disk】读取 API key rootDir 失败，回退到 '/': {e}")
+
+    def _to_cloud_path(self, path: str) -> str:
+        normalized = self._normalize_path(path)
+        if self._token_root == "/":
+            return normalized
+        if normalized == "/":
+            return self._token_root
+        if normalized == self._token_root or normalized.startswith(f"{self._token_root}/"):
+            return normalized
+        return self._join_path(self._token_root, normalized.lstrip("/"))
+
+    @staticmethod
+    def _rpc_error_text(error: grpc.RpcError) -> str:
+        code = error.code()
+        details = error.details() if hasattr(error, "details") else str(error)
+        return f"{getattr(code, 'name', 'UNKNOWN')}: {details}"
+
+    def _log_auth_error_once(self, action: str, target: str, error: grpc.RpcError):
+        if not self._auth_failed_logged:
+            logger.error("【Cd2Disk】CloudDrive2 鉴权失败，请检查 API key 是否正确（可直接填 token，无需 Bearer 前缀）")
+            self._auth_failed_logged = True
+        logger.debug(f"【Cd2Disk】{action}失败: {target}, {self._rpc_error_text(error)}")
 
     @staticmethod
     def _normalize_path(path: str) -> str:
@@ -54,13 +108,13 @@ class Cd2Api:
         return value
 
     def _normalize_dir_path(self, path: str) -> str:
-        value = self._normalize_path(path)
+        value = self._to_cloud_path(path)
         if value != "/":
             value = value.rstrip("/")
         return value
 
     def _normalize_file_path(self, path: str) -> str:
-        value = self._normalize_path(path)
+        value = self._to_cloud_path(path)
         if value != "/":
             value = value.rstrip("/")
         return value
@@ -227,6 +281,12 @@ class Cd2Api:
         try:
             files = self._list_cloud_files(path, force_refresh=False)
             return [self._to_file_item(one) for one in files]
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNAUTHENTICATED:
+                self._log_auth_error_once("浏览目录", path, e)
+            else:
+                logger.error(f"【Cd2Disk】浏览目录失败: {path}, {self._rpc_error_text(e)}")
+            return []
         except Exception as e:
             logger.error(f"【Cd2Disk】浏览目录失败: {path}, {e}")
             return []
@@ -254,6 +314,12 @@ class Cd2Api:
                     if item.type == "dir":
                         pending.append(self._normalize_dir_path(item.path))
             return result
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNAUTHENTICATED:
+                self._log_auth_error_once("递归遍历目录", root, e)
+            else:
+                logger.error(f"【Cd2Disk】递归遍历目录失败: {root}, {self._rpc_error_text(e)}")
+            return None
         except Exception as e:
             logger.error(f"【Cd2Disk】递归遍历目录失败: {root}, {e}")
             return None
@@ -284,11 +350,15 @@ class Cd2Api:
             return self._root_item()
 
         try:
-            req = CloudDrive_pb2.FindFileByPathRequest(path=target_path)
+            req = CloudDrive_pb2.FindFileByPathRequest(path=self._normalize_file_path(target_path))
             cloud_file = self._stub.FindFileByPath(req, metadata=self._metadata)
             if not getattr(cloud_file, "name", "") and not getattr(cloud_file, "fullPathName", ""):
                 return None
             return self._to_file_item(cloud_file)
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.UNAUTHENTICATED:
+                self._log_auth_error_once("获取文件详情", target_path, e)
+            return None
         except Exception:
             return None
 
@@ -516,17 +586,11 @@ class Cd2Api:
         used = 0
         targets: List[str] = []
 
-        base_root = "/"
+        base_root = self._token_root or "/"
         try:
-            token_info = self._stub.GetApiTokenInfo(
-                CloudDrive_pb2.StringValue(value=self._api_key)
-            )
-            token_root = self._normalize_dir_path(getattr(token_info, "rootDir", "") or "/")
-            if token_root:
-                base_root = token_root
-                targets.append(token_root)
-        except Exception as e:
-            logger.debug(f"【Cd2Disk】读取 API key rootDir 失败，回退到 '/': {e}")
+            targets.append(base_root)
+        except Exception:
+            pass
 
         try:
             roots = self._list_cloud_files(base_root, force_refresh=False)
