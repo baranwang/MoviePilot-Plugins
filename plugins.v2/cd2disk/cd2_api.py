@@ -508,6 +508,13 @@ class Cd2Api:
     def detail(self, fileitem: FileItem) -> Optional[FileItem]:
         return self.get_item(Path(fileitem.path))
 
+    def get_folder(self, path: Path) -> Optional[FileItem]:
+        """获取目录信息，供 MoviePilot 媒体整理调用"""
+        item = self.get_item(path)
+        if item and item.type == "dir":
+            return item
+        return None
+
     def delete(self, fileitem: FileItem) -> bool:
         path = self._normalize_path(fileitem.path)
         try:
