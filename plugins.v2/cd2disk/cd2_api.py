@@ -42,15 +42,16 @@ class Cd2Api:
         if not token:
             raise RuntimeError("CloudDrive2 API key 不能为空")
         self._api_key = token
-        self._metadata_candidates: List[List[Tuple[str, str]]] = self._build_metadata_candidates(token)
+        self._metadata_candidates: List[Tuple[str, List[Tuple[str, str]]]] = self._build_metadata_candidates(token)
         self._active_metadata_index = 0
-        self._metadata: List[Tuple[str, str]] = self._metadata_candidates[self._active_metadata_index]
+        self._metadata: List[Tuple[str, str]] = self._metadata_candidates[self._active_metadata_index][1]
         self._token_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:10]
         self._token_length = len(token)
         self._token_root = "/"
         self._auth_failed_logged = False
         self._probe_system_info()
         self._init_token_root()
+        self._preflight_authorized_access()
 
     @staticmethod
     def _normalize_api_key(api_key: str) -> str:
@@ -73,33 +74,37 @@ class Cd2Api:
             ) from e
 
     @staticmethod
-    def _build_metadata_candidates(token: str) -> List[List[Tuple[str, str]]]:
+    def _build_metadata_candidates(token: str) -> List[Tuple[str, List[Tuple[str, str]]]]:
         candidates = [
-            [("authorization", f"Bearer {token}")],
-            [("authorization", token)],
+            ("authorization:Bearer", [("authorization", f"Bearer {token}")]),
+            ("authorization:bearer", [("authorization", f"bearer {token}")]),
+            ("authorization:raw", [("authorization", token)]),
+            ("x-api-key", [("x-api-key", token)]),
+            ("x-api-token", [("x-api-token", token)]),
         ]
-        unique: List[List[Tuple[str, str]]] = []
+        unique: List[Tuple[str, List[Tuple[str, str]]]] = []
         seen = set()
-        for candidate in candidates:
-            key = tuple(candidate)
+        for label, metadata in candidates:
+            key = tuple(metadata)
             if key in seen:
                 continue
             seen.add(key)
-            unique.append(candidate)
+            unique.append((label, metadata))
         return unique
 
     def _set_active_metadata(self, index: int):
         if index == self._active_metadata_index:
             return
         self._active_metadata_index = index
-        self._metadata = self._metadata_candidates[index]
-        logger.info(f"【Cd2Disk】已切换鉴权头格式 variant={index + 1}, token_fp={self._token_fingerprint}")
+        variant, metadata = self._metadata_candidates[index]
+        self._metadata = metadata
+        logger.info(f"【Cd2Disk】已切换鉴权头格式 variant={variant}, token_fp={self._token_fingerprint}")
 
     def _call_authed(self, method_name: str, request: Any):
         rpc = getattr(self._stub, method_name)
         last_unauth = None
 
-        for index, metadata in enumerate(self._metadata_candidates):
+        for index, (_, metadata) in enumerate(self._metadata_candidates):
             try:
                 response = rpc(request, metadata=metadata)
                 self._set_active_metadata(index)
@@ -117,6 +122,17 @@ class Cd2Api:
     def _init_token_root(self):
         try:
             token_info = self._stub.GetApiTokenInfo(CloudDrive_pb2.StringValue(value=self._api_key))
+            info_token = self._normalize_api_key(getattr(token_info, "token", "") or "")
+            info_name = (getattr(token_info, "friendly_name", "") or "").strip()
+            if not info_token and not info_name:
+                logger.warning(
+                    "【Cd2Disk】GetApiTokenInfo 未返回有效 token 信息，可能不是当前实例创建的 token"
+                )
+
+            permissions = getattr(token_info, "permissions", None)
+            if permissions and hasattr(permissions, "allow_list") and not permissions.allow_list:
+                logger.warning("【Cd2Disk】当前 API key 未授予目录读取权限 allow_list，插件将无法浏览文件")
+
             token_root = self._normalize_path(getattr(token_info, "rootDir", "") or "/")
             if token_root != "/":
                 token_root = token_root.rstrip("/")
@@ -133,6 +149,21 @@ class Cd2Api:
             logger.debug(f"【Cd2Disk】读取 API key rootDir 失败，回退到 '/': {e}")
         except Exception as e:
             logger.debug(f"【Cd2Disk】读取 API key rootDir 失败，回退到 '/': {e}")
+
+    def _preflight_authorized_access(self):
+        target = self._token_root or "/"
+        try:
+            self._list_cloud_files(target, force_refresh=False)
+        except grpc.RpcError as e:
+            code = e.code()
+            if code == grpc.StatusCode.UNAUTHENTICATED:
+                raise RuntimeError(
+                    f"CloudDrive2 鉴权失败: endpoint={self._origin_host}, token_fp={self._token_fingerprint}, "
+                    "请确认 token 来自当前实例且未过期未删除"
+                ) from e
+            if code == grpc.StatusCode.PERMISSION_DENIED:
+                raise RuntimeError("CloudDrive2 API key 缺少目录读取权限 allow_list") from e
+            logger.debug(f"【Cd2Disk】初始化预检跳过: {self._rpc_error_text(e)}")
 
     def _to_cloud_path(self, path: str) -> str:
         normalized = self._normalize_path(path)
@@ -293,7 +324,7 @@ class Cd2Api:
         req = CloudDrive_pb2.ListSubFileRequest(path=path, forceRefresh=force_refresh)
         last_unauth = None
 
-        for index, metadata in enumerate(self._metadata_candidates):
+        for index, (_, metadata) in enumerate(self._metadata_candidates):
             result: List[Any] = []
             try:
                 for reply in self._stub.GetSubFiles(req, metadata=metadata):
