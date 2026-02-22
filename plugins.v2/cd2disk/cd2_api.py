@@ -686,6 +686,11 @@ class Cd2Api:
         remote_dir = self._normalize_dir_path(target_dir.path)
         remote_path = self._join_path(remote_dir, target_name)
 
+        # 确保目标目录存在，不存在则递归创建
+        if not self.get_folder(Path(remote_dir)):
+            logger.error(f"【Cd2Disk】上传失败，目标目录创建失败: {remote_dir}")
+            return None
+
         existed = self.get_item(Path(remote_path))
         if existed and not self.delete(existed):
             logger.error(f"【Cd2Disk】上传失败，无法覆盖已有文件: {remote_path}")
