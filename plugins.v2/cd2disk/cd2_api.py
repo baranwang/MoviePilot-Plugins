@@ -509,11 +509,39 @@ class Cd2Api:
         return self.get_item(Path(fileitem.path))
 
     def get_folder(self, path: Path) -> Optional[FileItem]:
-        """获取目录信息，供 MoviePilot 媒体整理调用"""
+        """
+        获取目录信息，不存在则逐级创建。
+        供 MoviePilot 媒体整理调用。
+        """
+        target = self._normalize_path(path.as_posix())
+
+        # 先查询是否已存在
         item = self.get_item(path)
         if item and item.type == "dir":
             return item
-        return None
+
+        # 不存在，逐级创建
+        parts = PurePosixPath(target).parts  # ('/', 'a', 'b', 'c')
+        current = "/"
+        current_item: Optional[FileItem] = None
+        for part in parts[1:]:  # 跳过根 '/'
+            next_path = self._join_path(current, part)
+            existing = self.get_item(Path(next_path))
+            if existing and existing.type == "dir":
+                current = next_path
+                current_item = existing
+                continue
+
+            # 需要创建这一级目录
+            parent_item = current_item or self._root_item()
+            created = self.create_folder(parent_item, part)
+            if not created:
+                logger.error(f"【Cd2Disk】创建目录失败: {next_path}")
+                return None
+            current = next_path
+            current_item = created
+
+        return current_item
 
     def delete(self, fileitem: FileItem) -> bool:
         path = self._normalize_path(fileitem.path)

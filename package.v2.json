@@ -35,7 +35,7 @@
     "name": "CloudDrive2 储存",
     "description": "接入 CloudDrive2 作为 MoviePilot 储存模块，支持浏览、上传、下载、重命名、删除与空间统计",
     "labels": "网盘,CloudDrive2,储存",
-    "version": "0.1.17",
+    "version": "0.1.18",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png",
     "author": "baranwang",
     "level": 2,
@@ -57,7 +57,8 @@
       "v0.1.14": "精确过滤云盘根目录：使用 isCloudRoot 标识真实云盘，自动排除自挂载目录；使用 freeSpace 直接获取可用空间",
       "v0.1.15": "增强空间统计日志：记录每个子目录的 isCloudRoot/cloudName 判断、单盘空间详情、去重过程及最终汇总结果",
       "v0.1.16": "修复文件移动时源文件过早删除：上传完成后轮询 GetUploadFileList 等待 CD2 云端上传结束，防止移动操作失败",
-      "v0.1.17": "修复媒体整理报错 get_folder：补充 Cd2Api.get_folder 方法支持框架目录查询"
+      "v0.1.17": "修复媒体整理报错 get_folder：补充 Cd2Api.get_folder 方法支持框架目录查询",
+      "v0.1.18": "修复媒体整理目标目录获取失败：get_folder 改为获取或递归创建目录，目标路径不存在时自动逐级创建"
     }
   },
   "EmbyMissingSubscribe": {
