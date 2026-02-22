@@ -1,10 +1,12 @@
 import hashlib
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 import grpc
+from google.protobuf import empty_pb2
 
 try:
     from . import clouddrive_pb2 as CloudDrive_pb2
@@ -44,19 +46,31 @@ class Cd2Api:
         self._active_metadata_index = 0
         self._metadata: List[Tuple[str, str]] = self._metadata_candidates[self._active_metadata_index]
         self._token_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:10]
+        self._token_length = len(token)
         self._token_root = "/"
         self._auth_failed_logged = False
+        self._probe_system_info()
         self._init_token_root()
 
     @staticmethod
     def _normalize_api_key(api_key: str) -> str:
         token = (api_key or "").strip().strip('"').strip("'")
         token = token.replace("\r", "").replace("\n", "").strip()
+        token = re.sub(r"[\u200b-\u200f\u2060\ufeff]", "", token)
         if token.lower().startswith("authorization:"):
             token = token.split(":", 1)[1].strip()
         if token.lower().startswith("bearer "):
             token = token[7:].strip()
+        token = "".join(token.split())
         return token
+
+    def _probe_system_info(self):
+        try:
+            self._stub.GetSystemInfo(empty_pb2.Empty())
+        except grpc.RpcError as e:
+            raise RuntimeError(
+                f"CloudDrive2 服务不可用或地址不正确: {self._origin_host}, {self._rpc_error_text(e)}"
+            ) from e
 
     @staticmethod
     def _build_metadata_candidates(token: str) -> List[List[Tuple[str, str]]]:
@@ -139,8 +153,10 @@ class Cd2Api:
     def _log_auth_error_once(self, action: str, target: str, error: grpc.RpcError):
         if not self._auth_failed_logged:
             logger.error(
-                f"【Cd2Disk】CloudDrive2 鉴权失败，请检查 API key 或权限设置（token_fp={self._token_fingerprint}）"
+                f"【Cd2Disk】CloudDrive2 鉴权失败，请检查 API key 或权限设置 "
+                f"(endpoint={self._origin_host}, token_fp={self._token_fingerprint}, token_len={self._token_length})"
             )
+            logger.error("【Cd2Disk】请确认 token 来自当前 CloudDrive2 实例，且未过期、未删除")
             self._auth_failed_logged = True
         logger.debug(f"【Cd2Disk】{action}失败: {target}, {self._rpc_error_text(error)}")
 
