@@ -31,6 +31,18 @@
       "v1.1.0": "修复放行时未预估磁盘空间导致多种子同时下载磁盘写满的问题；增加磁盘空间预检和虚拟空间扣减机制；防死锁逻辑增加空间安全检查"
     }
   },
+  "Cd2Disk": {
+    "name": "CloudDrive2 储存",
+    "description": "接入 CloudDrive2 作为 MoviePilot 储存模块，支持浏览、上传、下载、重命名、删除与空间统计",
+    "labels": "网盘,CloudDrive2,储存",
+    "version": "0.1.0",
+    "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png",
+    "author": "baranwang",
+    "level": 2,
+    "history": {
+      "v0.1.0": "初始版本：新增 CloudDrive2 储存插件，提供 MoviePilot v2 储存模块对接能力"
+    }
+  },
   "EmbyMissingSubscribe": {
     "name": "Emby 遗漏集订阅",
     "description": "扫描 Emby 媒体库中的遗漏剧集，自动添加 MoviePilot 订阅",
