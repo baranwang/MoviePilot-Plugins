@@ -59,6 +59,13 @@ MoviePilot V2 插件仓库，当前包含 `qbsmartqueue` 插件 —— 基于下
 - 下载目录通过 `DirectoryHelper().get_local_download_dirs()` 动态获取
 - 表单使用 `VCronField` 替代纯文本 cron 输入
 
+### 版本与日志规范（强制）
+
+- 每次修改任意插件（`plugins.v2/<plugin>/`）代码或行为时，必须同步更新该插件 `__init__.py` 中的 `plugin_version`
+- 每次发布插件改动时，必须同步更新 `package.v2.json` 对应条目的 `version` 与 `history`
+- `history` 必须新增当前版本的变更说明，不允许只改代码不记日志
+- 提交前必须检查 `plugin_version` 与 `package.v2.json` 的 `version` 完全一致
+
 ### qBittorrent 种子状态
 
 - 活跃下载：`downloading`, `stalledDL`, `metaDL`, `checkingDL`, `forcedDL`, `allocating`
