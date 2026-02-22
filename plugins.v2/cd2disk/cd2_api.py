@@ -77,10 +77,6 @@ class Cd2Api:
     def _build_metadata_candidates(token: str) -> List[Tuple[str, List[Tuple[str, str]]]]:
         candidates = [
             ("authorization:Bearer", [("authorization", f"Bearer {token}")]),
-            ("authorization:bearer", [("authorization", f"bearer {token}")]),
-            ("authorization:raw", [("authorization", token)]),
-            ("x-api-key", [("x-api-key", token)]),
-            ("x-api-token", [("x-api-token", token)]),
         ]
         unique: List[Tuple[str, List[Tuple[str, str]]]] = []
         seen = set()
