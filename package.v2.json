@@ -30,5 +30,17 @@
       "v1.0.2": "修复了 UI 布局问题，优化了配置项名称和提示信息",
       "v1.1.0": "修复放行时未预估磁盘空间导致多种子同时下载磁盘写满的问题；增加磁盘空间预检和虚拟空间扣减机制；防死锁逻辑增加空间安全检查"
     }
+  },
+  "EmbyMissingSubscribe": {
+    "name": "Emby 遗漏集订阅",
+    "description": "扫描 Emby 媒体库中的遗漏剧集，自动添加 MoviePilot 订阅",
+    "labels": "Emby,订阅,遗漏集,媒体库",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png",
+    "author": "baranwang",
+    "level": 2,
+    "history": {
+      "v1.0.0": "初始版本：扫描 Emby 遗漏剧集，自动按剧集 + 季创建 MoviePilot 订阅"
+    }
   }
 }

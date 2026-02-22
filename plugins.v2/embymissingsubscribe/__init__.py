@@ -1,0 +1,690 @@
+import threading
+from datetime import datetime, timedelta
+from typing import List, Tuple, Dict, Any, Optional
+
+import pytz
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+from app.chain.media import MediaChain
+from app.chain.subscribe import SubscribeChain
+from app.core.config import settings
+from app.core.event import eventmanager, Event
+from app.core.metainfo import MetaInfo
+from app.helper.mediaserver import MediaServerHelper
+from app.log import logger
+from app.plugins import _PluginBase
+from app.schemas import NotificationType
+from app.schemas.types import EventType, MediaType
+
+lock = threading.Lock()
+
+
+class EmbyMissingSubscribe(_PluginBase):
+    """扫描 Emby 媒体库中的遗漏剧集，自动添加 MoviePilot 订阅"""
+
+    # 插件名称
+    plugin_name = "Emby 遗漏集订阅"
+    # 插件描述
+    plugin_desc = "扫描 Emby 媒体库中的遗漏剧集，自动添加 MoviePilot 订阅"
+    # 插件图标
+    plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
+    # 插件版本
+    plugin_version = "1.0.0"
+    # 插件作者
+    plugin_author = "baranwang"
+    # 作者主页
+    author_url = "https://github.com/baranwang"
+    # 插件配置项 ID 前缀
+    plugin_config_prefix = "embymissingsubscribe_"
+    # 加载顺序
+    plugin_order = 10
+    # 可使用的用户级别
+    auth_level = 2
+
+    # 私有属性
+    _event = threading.Event()
+    _scheduler: Optional[BackgroundScheduler] = None
+    _enabled: bool = False
+    _notify: bool = True
+    _onlyonce: bool = False
+    _cron: str = ""
+    _mediaservers: list = []
+    _libraries: list = []
+    _skip_future: bool = True
+
+    # 运行时
+    mediaserver_helper = None
+    _all_libraries: list = []
+
+    def init_plugin(self, config: dict = None):
+        self.mediaserver_helper = MediaServerHelper()
+
+        if config:
+            self._enabled = config.get("enabled", False)
+            self._notify = config.get("notify", True)
+            self._onlyonce = config.get("onlyonce", False)
+            self._cron = config.get("cron") or ""
+            self._mediaservers = config.get("mediaservers") or []
+            self._libraries = config.get("libraries") or []
+            self._skip_future = config.get("skip_future", True)
+
+        # 构建媒体库列表（供表单选择用）
+        if self._mediaservers:
+            self._all_libraries = self._build_library_list()
+
+        self.stop_service()
+
+        if self._onlyonce:
+            self._scheduler = BackgroundScheduler(timezone=settings.TZ)
+            logger.info("Emby 遗漏集订阅服务启动，立即运行一次")
+            self._scheduler.add_job(
+                func=self.scan_missing,
+                trigger="date",
+                run_date=datetime.now(
+                    tz=pytz.timezone(settings.TZ)
+                ) + timedelta(seconds=3),
+            )
+            self._onlyonce = False
+            self.update_config({
+                "enabled": self._enabled,
+                "notify": self._notify,
+                "onlyonce": False,
+                "cron": self._cron,
+                "mediaservers": self._mediaservers,
+                "libraries": self._libraries,
+                "skip_future": self._skip_future,
+            })
+            if self._scheduler.get_jobs():
+                self._scheduler.print_jobs()
+                self._scheduler.start()
+
+    def get_state(self) -> bool:
+        return True if self._enabled and self._cron and self._mediaservers else False
+
+    @staticmethod
+    def get_command() -> List[Dict[str, Any]]:
+        return [
+            {
+                "cmd": "/emby_missing",
+                "event": EventType.PluginAction,
+                "desc": "立即扫描 Emby 遗漏集并订阅",
+                "category": "Emby",
+                "data": {"action": "emby_missing_subscribe"},
+            }
+        ]
+
+    def get_api(self) -> List[Dict[str, Any]]:
+        pass
+
+    def get_service(self) -> List[Dict[str, Any]]:
+        if self.get_state():
+            return [
+                {
+                    "id": "EmbyMissingSubscribe",
+                    "name": "Emby 遗漏集订阅",
+                    "trigger": CronTrigger.from_crontab(self._cron),
+                    "func": self.scan_missing,
+                    "kwargs": {},
+                }
+            ]
+        return []
+
+    @eventmanager.register(EventType.PluginAction)
+    def handle_command(self, event: Event):
+        """
+        处理远程命令
+        """
+        if not self._enabled:
+            return
+        if event:
+            event_data = event.event_data
+            if not event_data or event_data.get("action") != "emby_missing_subscribe":
+                return
+        logger.info("收到远程命令，立即执行 Emby 遗漏集扫描")
+        self.scan_missing()
+
+    # ================================================================
+    # 核心扫描逻辑
+    # ================================================================
+
+    def scan_missing(self):
+        """
+        入口：遍历所有已配置的 Emby 服务器，查找遗漏集并创建订阅
+        """
+        with lock:
+            if not self._mediaservers:
+                logger.warning("未配置媒体服务器")
+                return
+
+            services = self.mediaserver_helper.get_services(
+                name_filters=self._mediaservers
+            )
+            if not services:
+                logger.warning("获取媒体服务器实例失败，请检查配置")
+                return
+
+            # 加载历史记录（避免重复处理）
+            history: dict = self.get_data("history") or {}
+            total_added: List[str] = []
+
+            for server_name, service in services.items():
+                if service.instance.is_inactive():
+                    logger.warning(f"媒体服务器 {server_name} 未连接，跳过")
+                    continue
+                if service.type != "emby":
+                    logger.warning(
+                        f"媒体服务器 {server_name} 不是 Emby 类型，跳过"
+                    )
+                    continue
+
+                try:
+                    added = self._scan_server(server_name, service, history)
+                    total_added.extend(added)
+                except Exception as e:
+                    logger.error(f"扫描媒体服务器 {server_name} 时出错: {e}")
+
+            # 持久化历史
+            self.save_data("history", history)
+
+            # 发送通知
+            if self._notify and total_added:
+                text_lines = [f"新增 {len(total_added)} 个订阅："]
+                for item in total_added[:10]:
+                    text_lines.append(f"· {item}")
+                if len(total_added) > 10:
+                    text_lines.append(f"... 等共 {len(total_added)} 个")
+                self.post_message(
+                    mtype=NotificationType.SiteMessage,
+                    title="【Emby 遗漏集订阅】",
+                    text="\n".join(text_lines),
+                )
+
+            if total_added:
+                logger.info(
+                    f"Emby 遗漏集扫描完成，新增 {len(total_added)} 个订阅"
+                )
+            else:
+                logger.info("Emby 遗漏集扫描完成，无新增订阅")
+
+    def _scan_server(
+        self, server_name: str, service, history: dict
+    ) -> List[str]:
+        """
+        扫描单个 Emby 服务器，返回本次新增订阅的描述列表
+        """
+        added_list: List[str] = []
+
+        # 获取 Emby 用户 ID
+        user_id = service.instance.user
+        if not user_id:
+            logger.warning(f"[{server_name}] 无法获取 Emby 用户 ID")
+            return added_list
+
+        # 确定要扫描的媒体库 ID
+        library_ids = self._get_scan_library_ids(server_name)
+        if not library_ids:
+            # 不指定 ParentId，扫描全部媒体库
+            library_ids = [None]
+
+        for library_id in library_ids:
+            try:
+                items = self._fetch_missing_episodes(
+                    service, user_id, library_id
+                )
+                if not items:
+                    continue
+
+                # 按 (SeriesId, Season) 分组
+                groups = self._group_by_series_season(items)
+
+                for (series_id, season), episodes in groups.items():
+                    history_key = f"{server_name}:{series_id}:S{season}"
+                    if history_key in history:
+                        logger.debug(
+                            f"[{server_name}] 已处理过: {history_key}"
+                        )
+                        continue
+
+                    series_name = episodes[0].get("SeriesName", "未知")
+                    ep_numbers = sorted(
+                        ep.get("IndexNumber", 0) for ep in episodes
+                    )
+
+                    # 解析 TMDB ID
+                    tmdb_id = self._resolve_tmdb_id(
+                        service, user_id, series_id, series_name
+                    )
+                    if not tmdb_id:
+                        logger.warning(
+                            f"[{server_name}] 无法获取 TMDB ID: "
+                            f"{series_name} S{season:02d}，跳过"
+                        )
+                        continue
+
+                    # 获取年份
+                    year = str(episodes[0].get("ProductionYear", ""))
+
+                    # 创建订阅
+                    sub_id, msg = SubscribeChain().add(
+                        title=series_name,
+                        year=year,
+                        mtype=MediaType.TV,
+                        tmdbid=tmdb_id,
+                        season=season,
+                        exist_ok=True,
+                        username="Emby 遗漏集",
+                    )
+
+                    if sub_id:
+                        desc = (
+                            f"{series_name} S{season:02d} "
+                            f"(TMDB:{tmdb_id}, 遗漏 {len(episodes)} 集)"
+                        )
+                        added_list.append(desc)
+                        logger.info(f"[{server_name}] 订阅成功: {desc}")
+                    else:
+                        logger.info(
+                            f"[{server_name}] 订阅跳过: "
+                            f"{series_name} S{season:02d} - {msg}"
+                        )
+
+                    # 无论成功与否都记录历史，避免反复重试
+                    history[history_key] = {
+                        "series_name": series_name,
+                        "season": season,
+                        "tmdb_id": tmdb_id,
+                        "episodes": ep_numbers,
+                        "subscribe_id": sub_id,
+                        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+
+            except Exception as e:
+                logger.error(
+                    f"[{server_name}] 扫描媒体库 {library_id} 时出错: {e}"
+                )
+
+        return added_list
+
+    # ================================================================
+    # Emby API 交互
+    # ================================================================
+
+    def _fetch_missing_episodes(
+        self, service, user_id: str, parent_id: Optional[str] = None
+    ) -> List[dict]:
+        """
+        调用 Emby /Shows/Missing API 获取遗漏（Virtual）剧集
+        """
+        url = (
+            f"[HOST]emby/Shows/Missing?"
+            f"api_key=[APIKEY]"
+            f"&UserId={user_id}"
+            f"&Fields=ProviderIds,Overview,PremiereDate,ProductionYear"
+            f"&Limit=500"
+        )
+        if parent_id:
+            url += f"&ParentId={parent_id}"
+
+        try:
+            res = service.instance.get_data(url=url)
+            if not res:
+                return []
+            data = res.json()
+            items = data.get("Items", [])
+
+            # 过滤尚未播出的剧集
+            if self._skip_future and items:
+                now = datetime.now()
+                filtered = []
+                for item in items:
+                    premiere = item.get("PremiereDate")
+                    if premiere:
+                        try:
+                            premiere_dt = datetime.fromisoformat(
+                                premiere.replace("Z", "+00:00")
+                            ).replace(tzinfo=None)
+                            if premiere_dt > now:
+                                continue
+                        except (ValueError, TypeError):
+                            pass
+                    filtered.append(item)
+                items = filtered
+
+            logger.info(
+                f"获取到 {len(items)} 个遗漏剧集"
+                + (f" (媒体库 {parent_id})" if parent_id else "")
+            )
+            return items
+
+        except Exception as e:
+            logger.error(f"获取遗漏剧集失败: {e}")
+            return []
+
+    def _resolve_tmdb_id(
+        self,
+        service,
+        user_id: str,
+        series_id: str,
+        series_name: str,
+    ) -> Optional[int]:
+        """
+        获取剧集的 TMDB ID：
+        1. 优先从 Emby Series 级别的 ProviderIds 中获取
+        2. 回退到 MediaChain 按标题识别
+        """
+        # —— 方式 1: Emby Series 元数据 ——
+        try:
+            url = (
+                f"[HOST]emby/Users/{user_id}/Items/{series_id}?"
+                f"api_key=[APIKEY]"
+                f"&Fields=ProviderIds"
+            )
+            res = service.instance.get_data(url=url)
+            if res:
+                series_data = res.json()
+                provider_ids = series_data.get("ProviderIds", {})
+                tmdb_str = provider_ids.get("Tmdb") or provider_ids.get("tmdb")
+                if tmdb_str:
+                    return int(tmdb_str)
+        except Exception as e:
+            logger.debug(f"从 Emby 获取 Series TMDB ID 失败: {e}")
+
+        # —— 方式 2: MediaChain 识别 ——
+        try:
+            meta = MetaInfo(title=series_name)
+            meta.type = MediaType.TV
+            mediainfo = MediaChain().recognize_media(meta=meta)
+            if mediainfo and mediainfo.tmdb_id:
+                logger.info(
+                    f"通过 MediaChain 识别到 TMDB ID: "
+                    f"{series_name} -> {mediainfo.tmdb_id}"
+                )
+                return mediainfo.tmdb_id
+        except Exception as e:
+            logger.debug(f"MediaChain 识别失败: {series_name}, {e}")
+
+        return None
+
+    # ================================================================
+    # 辅助方法
+    # ================================================================
+
+    @staticmethod
+    def _group_by_series_season(
+        items: List[dict],
+    ) -> Dict[Tuple[str, int], List[dict]]:
+        """
+        将遗漏剧集按 (SeriesId, Season) 分组
+        """
+        groups: Dict[Tuple[str, int], List[dict]] = {}
+        for item in items:
+            series_id = item.get("SeriesId")
+            season = item.get("ParentIndexNumber", 1)
+            if not series_id:
+                continue
+            key = (series_id, season)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(item)
+        return groups
+
+    def _get_scan_library_ids(self, server_name: str) -> List[str]:
+        """
+        从用户选择的媒体库中，提取属于指定服务器的媒体库 ID
+        """
+        if not self._libraries:
+            return []
+
+        result = []
+        prefix = f"{server_name}-"
+        for lib_value in self._libraries:
+            if lib_value.startswith(prefix):
+                lib_id = lib_value[len(prefix):]
+                result.append(lib_id)
+        return result
+
+    def _build_library_list(self) -> list:
+        """
+        构建媒体库选项列表（供表单多选使用）
+        """
+        lib_items = []
+        if not self._mediaservers:
+            return lib_items
+
+        services = self.mediaserver_helper.get_services(
+            name_filters=self._mediaservers
+        )
+        if not services:
+            return lib_items
+
+        for server_name, service in services.items():
+            if service.instance.is_inactive() or service.type != "emby":
+                continue
+            try:
+                url = (
+                    "[HOST]emby/Library/VirtualFolders/Query?"
+                    "api_key=[APIKEY]"
+                )
+                res = service.instance.get_data(url=url)
+                if not res:
+                    continue
+                data = res.json()
+                libraries = data.get("Items", [])
+                for lib in libraries:
+                    lib_id = lib.get("Id")
+                    lib_name = lib.get("Name")
+                    if lib_id and lib_name:
+                        lib_items.append({
+                            "title": f"{server_name}: {lib_name}",
+                            "value": f"{server_name}-{lib_id}",
+                        })
+            except Exception as e:
+                logger.debug(
+                    f"获取媒体库列表失败: {server_name}, {e}"
+                )
+
+        return lib_items
+
+    # ================================================================
+    # 表单
+    # ================================================================
+
+    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        # 构建媒体服务器选项
+        server_items = []
+        if self.mediaserver_helper:
+            for svc in self.mediaserver_helper.get_services().values():
+                server_items.append({
+                    "title": svc.name,
+                    "value": svc.name,
+                })
+
+        return [
+            {
+                "component": "VForm",
+                "content": [
+                    # ── 开关行 ──
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "enabled",
+                                            "label": "启用插件",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "notify",
+                                            "label": "发送通知",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "onlyonce",
+                                            "label": "立即运行一次",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # ── 执行周期 + 跳过未播出 ──
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VCronField",
+                                        "props": {
+                                            "model": "cron",
+                                            "label": "执行周期",
+                                            "placeholder": "0 8 * * *",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "skip_future",
+                                            "label": "跳过未播出剧集",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # ── 媒体服务器 + 媒体库 ──
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "multiple": True,
+                                            "chips": True,
+                                            "clearable": True,
+                                            "model": "mediaservers",
+                                            "label": "媒体服务器",
+                                            "items": server_items,
+                                            "hint": "选择要扫描的 Emby 服务器",
+                                            "persistentHint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "multiple": True,
+                                            "chips": True,
+                                            "clearable": True,
+                                            "model": "libraries",
+                                            "label": "媒体库",
+                                            "items": self._all_libraries
+                                            or [],
+                                            "hint": "选择要扫描的媒体库，不选则扫描全部",
+                                            "persistentHint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # ── 说明 ──
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "info",
+                                            "variant": "tonal",
+                                            "text": (
+                                                "扫描 Emby 媒体库中标记为"
+                                                " Virtual（遗漏）的剧集，"
+                                                "自动按剧集 + 季创建"
+                                                " MoviePilot 订阅：\n\n"
+                                                "1. 调用 Emby /Shows/Missing"
+                                                " API 获取遗漏剧集\n\n"
+                                                "2. 按剧集和季分组，从 Emby"
+                                                " 或 TMDB 获取元数据\n\n"
+                                                "3. 自动创建订阅，已有订阅"
+                                                "不会重复添加\n\n"
+                                                "4. 记录历史避免重复处理"
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            }
+        ], {
+            "enabled": False,
+            "notify": True,
+            "onlyonce": False,
+            "cron": "",
+            "mediaservers": [],
+            "libraries": [],
+            "skip_future": True,
+        }
+
+    def get_page(self) -> List[dict]:
+        pass
+
+    def stop_service(self):
+        """
+        退出插件
+        """
+        try:
+            if self._scheduler:
+                self._scheduler.remove_all_jobs()
+                if self._scheduler.running:
+                    self._event.set()
+                    self._scheduler.shutdown()
+                    self._event.clear()
+                self._scheduler = None
+        except Exception as e:
+            logger.error(f"Emby 遗漏集订阅停止服务异常: {e}")
