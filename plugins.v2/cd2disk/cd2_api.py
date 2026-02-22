@@ -1,4 +1,5 @@
 import hashlib
+import time
 import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
@@ -700,6 +701,9 @@ class Cd2Api:
                 return None
             file_handle = 0
 
+            # 等待 CD2 完成云端上传，避免源文件被过早删除
+            self._wait_upload_complete(remote_path)
+
             return self.get_item(Path(remote_path))
         except Exception as e:
             logger.error(f"【Cd2Disk】上传失败: {local_path} -> {remote_path}, {e}")
@@ -710,6 +714,78 @@ class Cd2Api:
                     self._call_authed("CloseFile", CloudDrive_pb2.CloseFileRequest(fileHandle=file_handle))
                 except Exception:
                     pass
+
+    def _wait_upload_complete(
+        self, remote_path: str, timeout: int = 600, interval: int = 5
+    ) -> bool:
+        """
+        等待 CD2 将文件上传到云端完成。
+        通过轮询 GetUploadFileList 检查目标文件的上传状态。
+        """
+        # 终态集合 — 这些状态表示上传已结束
+        terminal_statuses = {
+            CloudDrive_pb2.UploadFileInfo.Finish,
+            CloudDrive_pb2.UploadFileInfo.Error,
+            CloudDrive_pb2.UploadFileInfo.FatalError,
+            CloudDrive_pb2.UploadFileInfo.Cancelled,
+            CloudDrive_pb2.UploadFileInfo.Skipped,
+            CloudDrive_pb2.UploadFileInfo.Ignored,
+        }
+
+        normalized = self._normalize_path(remote_path)
+        deadline = time.monotonic() + timeout
+        found_ever = False
+
+        while time.monotonic() < deadline:
+            try:
+                resp = self._call_authed(
+                    "GetUploadFileList",
+                    CloudDrive_pb2.GetUploadFileListRequest(getAll=True),
+                )
+                upload_files = getattr(resp, "uploadFiles", []) or []
+
+                # 查找匹配的上传任务
+                found = False
+                for uf in upload_files:
+                    dest = self._normalize_path(getattr(uf, "destPath", "") or "")
+                    if dest == normalized or dest.rstrip("/") == normalized.rstrip("/"):
+                        found = True
+                        found_ever = True
+                        status_enum = getattr(uf, "statusEnum", None)
+                        status_str = getattr(uf, "status", "")
+                        transferred = int(getattr(uf, "transferedBytes", 0) or 0)
+                        total = int(getattr(uf, "size", 0) or 0)
+
+                        if status_enum in terminal_statuses:
+                            if status_enum == CloudDrive_pb2.UploadFileInfo.Finish:
+                                logger.info(f"【Cd2Disk】云端上传完成: {remote_path}")
+                            else:
+                                logger.warning(
+                                    f"【Cd2Disk】云端上传终态非成功: {remote_path}, "
+                                    f"status={status_str}, enum={status_enum}"
+                                )
+                            return status_enum == CloudDrive_pb2.UploadFileInfo.Finish
+
+                        logger.debug(
+                            f"【Cd2Disk】等待云端上传: {remote_path}, status={status_str}, "
+                            f"transferred={self._human_size(transferred)}/{self._human_size(total)}"
+                        )
+                        break
+
+                if not found:
+                    if found_ever:
+                        # 之前出现过又消失了，认为已完成
+                        logger.info(f"【Cd2Disk】上传任务已从队列消失，视为完成: {remote_path}")
+                        return True
+                    # CD2 可能还没来得及创建上传任务，或者已经秒传完成
+
+            except Exception as e:
+                logger.debug(f"【Cd2Disk】查询上传状态失败: {remote_path}, {e}")
+
+            time.sleep(interval)
+
+        logger.warning(f"【Cd2Disk】等待云端上传超时({timeout}s): {remote_path}")
+        return False
 
     @staticmethod
     def _human_size(size_bytes: int) -> str:
