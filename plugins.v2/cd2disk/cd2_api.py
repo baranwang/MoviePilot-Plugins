@@ -714,26 +714,9 @@ class Cd2Api:
     def usage(self) -> Optional[StorageUsage]:
         base_root = self._token_root or "/"
 
-        # 优先尝试根路径获取空间信息
-        try:
-            space = self._call_authed("GetSpaceInfo", CloudDrive_pb2.FileRequest(path=base_root))
-            total = int(getattr(space, "totalSpace", 0) or 0)
-            used = int(getattr(space, "usedSpace", 0) or 0)
-            if total > 0 or used > 0:
-                return StorageUsage(total=total, used=used)
-        except grpc.RpcError as e:
-            code = e.code()
-            if code == grpc.StatusCode.UNAUTHENTICATED:
-                self._log_auth_error_once("获取空间信息", base_root, e)
-                return None
-            logger.debug(f"【Cd2Disk】根路径空间统计失败，尝试子目录: {base_root}, {e}")
-        except Exception as e:
-            logger.debug(f"【Cd2Disk】根路径空间统计失败，尝试子目录: {base_root}, {e}")
-
-        # 根路径失败时回退到子目录，使用去重避免重复累加
-        total = 0
-        used = 0
-        seen_spaces: set = set()
+        # 遍历一级子目录，逐个获取空间信息
+        # 不使用根路径 GetSpaceInfo，因为 CD2 支持自挂载，根路径会包含递归膨胀的值
+        entries: list = []
         try:
             roots = self._list_cloud_files(base_root, force_refresh=False)
             for one in roots:
@@ -752,12 +735,8 @@ class Cd2Api:
                     space = self._call_authed("GetSpaceInfo", CloudDrive_pb2.FileRequest(path=normalized))
                     t = int(getattr(space, "totalSpace", 0) or 0)
                     u = int(getattr(space, "usedSpace", 0) or 0)
-                    # 去重：相同 (total, used) 认为是同一存储空间
-                    key = (t, u)
-                    if key not in seen_spaces and (t > 0 or u > 0):
-                        seen_spaces.add(key)
-                        total += t
-                        used += u
+                    if t > 0 or u > 0:
+                        entries.append((t, u, normalized))
                 except grpc.RpcError as e:
                     code = e.code()
                     if code == grpc.StatusCode.UNAUTHENTICATED:
@@ -774,6 +753,42 @@ class Cd2Api:
                     logger.warning(f"【Cd2Disk】获取空间信息失败: {normalized}, {e}")
         except Exception as e:
             logger.debug(f"【Cd2Disk】枚举空间统计路径失败: {base_root}, {e}")
+
+        if not entries:
+            # 子目录全部失败时回退到根路径
+            try:
+                space = self._call_authed("GetSpaceInfo", CloudDrive_pb2.FileRequest(path=base_root))
+                total = int(getattr(space, "totalSpace", 0) or 0)
+                used = int(getattr(space, "usedSpace", 0) or 0)
+                if total > 0 or used > 0:
+                    return StorageUsage(total=total, used=used)
+            except Exception:
+                pass
+            return None
+
+        # 按 (total, used) 去重，避免同一存储空间被重复统计
+        seen: set = set()
+        unique: list = []
+        for t, u, path in entries:
+            key = (t, u)
+            if key not in seen:
+                seen.add(key)
+                unique.append((t, u, path))
+
+        # 排除自挂载目录：如果某目录的 total >= 其余所有目录 total 之和，则认为是自挂载聚合值
+        if len(unique) > 1:
+            filtered: list = []
+            for i, (t, u, path) in enumerate(unique):
+                others_total = sum(ot for j, (ot, _, _) in enumerate(unique) if j != i)
+                if t >= others_total > 0:
+                    logger.debug(f"【Cd2Disk】排除疑似自挂载目录的空间统计: {path}, total={t} >= others={others_total}")
+                    continue
+                filtered.append((t, u, path))
+            if filtered:
+                unique = filtered
+
+        total = sum(t for t, _, _ in unique)
+        used = sum(u for _, u, _ in unique)
 
         if total <= 0 and used <= 0:
             return None
