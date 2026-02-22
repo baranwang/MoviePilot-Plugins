@@ -1,5 +1,8 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import importlib.util
+import sys
+import types
 
 from app.core.event import eventmanager, Event
 from app.helper.storage import StorageHelper
@@ -8,7 +11,56 @@ from app.plugins import _PluginBase
 from app.schemas import FileItem, StorageOperSelectionEventData, StorageUsage
 from app.schemas.types import ChainEventType
 
-from .cd2_api import Cd2Api
+def _load_local_module(module_name: str, file_path: Path):
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if not spec or not spec.loader:
+        raise ImportError(f"无法加载模块: {module_name}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _install_clouddrive_shim():
+    """
+    兼容旧导入路径：from clouddrive.proto import CloudDrive_pb2
+    """
+    plugin_dir = Path(__file__).resolve().parent
+    pb2_file = plugin_dir / "clouddrive_pb2.py"
+    pb2_grpc_file = plugin_dir / "clouddrive_pb2_grpc.py"
+
+    if not pb2_file.exists() or not pb2_grpc_file.exists():
+        return
+
+    if str(plugin_dir) not in sys.path:
+        sys.path.insert(0, str(plugin_dir))
+
+    pb2_module = _load_local_module("clouddrive_pb2", pb2_file)
+    pb2_grpc_module = _load_local_module("clouddrive_pb2_grpc", pb2_grpc_file)
+
+    clouddrive_pkg = sys.modules.get("clouddrive") or types.ModuleType("clouddrive")
+    proto_pkg = sys.modules.get("clouddrive.proto") or types.ModuleType("clouddrive.proto")
+
+    setattr(proto_pkg, "CloudDrive_pb2", pb2_module)
+    setattr(proto_pkg, "CloudDrive_pb2_grpc", pb2_grpc_module)
+    setattr(clouddrive_pkg, "proto", proto_pkg)
+
+    sys.modules["clouddrive"] = clouddrive_pkg
+    sys.modules["clouddrive.proto"] = proto_pkg
+    sys.modules["clouddrive.proto.CloudDrive_pb2"] = pb2_module
+    sys.modules["clouddrive.proto.CloudDrive_pb2_grpc"] = pb2_grpc_module
+
+
+_install_clouddrive_shim()
+
+try:
+    from .cd2_api import Cd2Api
+except Exception:
+    from cd2_api import Cd2Api
 
 
 class Cd2Disk(_PluginBase):
@@ -19,7 +71,7 @@ class Cd2Disk(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png"
     # 插件版本
-    plugin_version = "0.1.1"
+    plugin_version = "0.1.2"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页

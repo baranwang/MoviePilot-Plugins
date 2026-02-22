@@ -35,13 +35,14 @@
     "name": "CloudDrive2 储存",
     "description": "接入 CloudDrive2 作为 MoviePilot 储存模块，支持浏览、上传、下载、重命名、删除与空间统计",
     "labels": "网盘,CloudDrive2,储存",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png",
     "author": "baranwang",
     "level": 2,
     "history": {
       "v0.1.0": "初始版本：新增 CloudDrive2 储存插件，提供 MoviePilot v2 储存模块对接能力",
-      "v0.1.1": "支持 API key 鉴权；内置 clouddrive.proto 及生成代码；移除对 clouddrive Python 包的运行时依赖"
+      "v0.1.1": "支持 API key 鉴权；内置 clouddrive.proto 及生成代码；移除对 clouddrive Python 包的运行时依赖",
+      "v0.1.2": "增强导入兼容性：支持包/非包两种加载路径并注入 clouddrive 兼容别名，修复 No module named 'clouddrive'"
     }
   },
   "EmbyMissingSubscribe": {

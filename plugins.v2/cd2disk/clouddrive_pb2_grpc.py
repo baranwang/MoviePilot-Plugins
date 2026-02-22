@@ -3,7 +3,10 @@
 import grpc
 import warnings
 
-from . import clouddrive_pb2 as clouddrive__pb2
+try:
+    from . import clouddrive_pb2 as clouddrive__pb2
+except Exception:
+    import clouddrive_pb2 as clouddrive__pb2
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
 
