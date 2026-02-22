@@ -761,7 +761,7 @@ class Cd2Api:
                 total = int(getattr(space, "totalSpace", 0) or 0)
                 used = int(getattr(space, "usedSpace", 0) or 0)
                 if total > 0 or used > 0:
-                    return StorageUsage(total=total, used=used)
+                    return StorageUsage(total=total, available=max(total - used, 0))
             except Exception:
                 pass
             return None
@@ -793,7 +793,7 @@ class Cd2Api:
         if total <= 0 and used <= 0:
             return None
 
-        return StorageUsage(total=total, used=used)
+        return StorageUsage(total=total, available=max(total - used, 0))
 
     def close(self):
         try:
