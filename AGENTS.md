@@ -85,6 +85,7 @@ MoviePilot V2 插件仓库，当前包含 `qbsmartqueue` 插件 —— 基于下
 
 ## 参考文档
 
+- [第三方插件库开发说明](https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/README.md) - 插件开发说明
 - [V2 插件开发指南](https://github.com/jxxghp/MoviePilot-Plugins/blob/main/docs/V2_Plugin_Development.md) — 插件结构、基类方法、表单组件、事件系统等
 
 ## 依赖

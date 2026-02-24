@@ -35,7 +35,7 @@
     "name": "CloudDrive2 储存",
     "description": "接入 CloudDrive2 作为 MoviePilot 储存模块，支持浏览、上传、下载、重命名、删除与空间统计",
     "labels": "网盘,CloudDrive2,储存",
-    "version": "0.1.19",
+    "version": "0.1.21",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png",
     "author": "baranwang",
     "level": 2,
@@ -60,7 +60,8 @@
       "v0.1.17": "修复媒体整理报错 get_folder：补充 Cd2Api.get_folder 方法支持框架目录查询",
       "v0.1.18": "修复媒体整理目标目录获取失败：get_folder 改为获取或递归创建目录，目标路径不存在时自动逐级创建",
       "v0.1.19": "修复上传时目标目录不存在导致 RPC 报错：upload 方法在创建文件前自动确保目标目录存在",
-      "v0.1.20": "修复上传 gRPC 消息超限：写入块大小从 8MB 降至 3MB，适配 CD2 服务端 4MB 限制；提升客户端侧 gRPC 消息上限"
+      "v0.1.20": "修复上传 gRPC 消息超限：写入块大小从 8MB 降至 3MB，适配 CD2 服务端 4MB 限制；提升客户端侧 gRPC 消息上限",
+      "v0.1.21": "修复大文件上传超时：总超时从 600s 提升至 3600s；新增无进度停滞检测（600s 无新字节才超时），避免大文件误判超时"
     }
   },
   "EmbyMissingSubscribe": {

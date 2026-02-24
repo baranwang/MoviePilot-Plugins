@@ -759,11 +759,16 @@ class Cd2Api:
                     pass
 
     def _wait_upload_complete(
-        self, remote_path: str, timeout: int = 600, interval: int = 5
+        self, remote_path: str, timeout: int = 3600, interval: int = 5,
+        stall_timeout: int = 600,
     ) -> bool:
         """
         等待 CD2 将文件上传到云端完成。
         通过轮询 GetUploadFileList 检查目标文件的上传状态。
+
+        :param timeout: 总超时时间（秒），默认 3600（1 小时）
+        :param interval: 轮询间隔（秒）
+        :param stall_timeout: 无进度超时（秒），如果持续 stall_timeout 秒没有新字节传输则超时
         """
         # 终态集合 — 这些状态表示上传已结束
         terminal_statuses = {
@@ -778,6 +783,8 @@ class Cd2Api:
         normalized = self._normalize_path(remote_path)
         deadline = time.monotonic() + timeout
         found_ever = False
+        last_transferred = -1
+        last_progress_time = time.monotonic()
 
         while time.monotonic() < deadline:
             try:
@@ -809,8 +816,25 @@ class Cd2Api:
                                 )
                             return status_enum == CloudDrive_pb2.UploadFileInfo.Finish
 
+                        # 检测上传进度，有新字节则刷新无进度超时
+                        now = time.monotonic()
+                        if transferred > last_transferred:
+                            last_progress_time = now
+                            last_transferred = transferred
+
+                        # 无进度超时检测
+                        stall_elapsed = now - last_progress_time
+                        if stall_elapsed >= stall_timeout:
+                            logger.warning(
+                                f"【Cd2Disk】云端上传停滞超时({stall_timeout}s 无新进度): {remote_path}, "
+                                f"transferred={self._human_size(transferred)}/{self._human_size(total)}"
+                            )
+                            return False
+
+                        progress_pct = f"{transferred / total * 100:.1f}%" if total > 0 else "N/A"
                         logger.debug(
                             f"【Cd2Disk】等待云端上传: {remote_path}, status={status_str}, "
+                            f"progress={progress_pct}, "
                             f"transferred={self._human_size(transferred)}/{self._human_size(total)}"
                         )
                         break
@@ -827,7 +851,8 @@ class Cd2Api:
 
             time.sleep(interval)
 
-        logger.warning(f"【Cd2Disk】等待云端上传超时({timeout}s): {remote_path}")
+        elapsed = timeout
+        logger.warning(f"【Cd2Disk】等待云端上传超时({elapsed}s): {remote_path}")
         return False
 
     @staticmethod
