@@ -3,7 +3,7 @@
     "name": "媒体库封面生成",
     "description": "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面",
     "labels": "媒体库,封面,Emby,Jellyfin",
-    "version": "1.4.1",
+    "version": "1.4.2",
     "icon": "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png",
     "author": "baranwang",
     "level": 1,
@@ -14,28 +14,30 @@
       "v1.2.1": "修复网格定位偏移；修复合集库不更新；只使用竖版海报",
       "v1.3.0": "只取剧/电影/合集级别海报；按发行时间排序；生成封面 webp 压缩",
       "v1.3.1": "修复合集库获取媒体项失败",
-      "v1.4.0": "合集库专用处理：自动展开 BoxSet 获取子项目电影海报"
+      "v1.4.0": "合集库专用处理：自动展开 BoxSet 获取子项目电影海报",
+      "v1.4.2": "修复内存泄露：PIL Image 对象显式关闭，中间图片对象及时释放；可变类属性移至实例级别初始化"
     }
   },
   "QbSmartQueue": {
     "name": "qBittorrent 队列调度",
     "description": "按下载体积动态调度 qBittorrent 队列，自动排队放行，防止磁盘爆满",
     "labels": "下载,qBittorrent,队列管理",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "icon": "Qbittorrent_A.png",
     "author": "baranwang",
     "level": 2,
     "history": {
       "v1.0.1": "初始版本：体积调度、溢出保护、小文件插队、防死锁、磁盘空间检测",
       "v1.0.2": "修复了 UI 布局问题，优化了配置项名称和提示信息",
-      "v1.1.0": "修复放行时未预估磁盘空间导致多种子同时下载磁盘写满的问题；增加磁盘空间预检和虚拟空间扣减机制；防死锁逻辑增加空间安全检查"
+      "v1.1.0": "修复放行时未预估磁盘空间导致多种子同时下载磁盘写满的问题；增加磁盘空间预检和虚拟空间扣减机制；防死锁逻辑增加空间安全检查",
+      "v1.1.1": "修复内存泄露：可变类属性移至实例级别初始化，避免热重载时引用残留"
     }
   },
   "Cd2Disk": {
     "name": "CloudDrive2 储存",
     "description": "接入 CloudDrive2 作为 MoviePilot 储存模块，支持浏览、上传、下载、重命名、删除与空间统计",
     "labels": "网盘,CloudDrive2,储存",
-    "version": "0.1.21",
+    "version": "0.1.22",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png",
     "author": "baranwang",
     "level": 2,
@@ -61,19 +63,21 @@
       "v0.1.18": "修复媒体整理目标目录获取失败：get_folder 改为获取或递归创建目录，目标路径不存在时自动逐级创建",
       "v0.1.19": "修复上传时目标目录不存在导致 RPC 报错：upload 方法在创建文件前自动确保目标目录存在",
       "v0.1.20": "修复上传 gRPC 消息超限：写入块大小从 8MB 降至 3MB，适配 CD2 服务端 4MB 限制；提升客户端侧 gRPC 消息上限",
-      "v0.1.21": "修复大文件上传超时：总超时从 600s 提升至 3600s；新增无进度停滞检测（600s 无新字节才超时），避免大文件误判超时"
+      "v0.1.21": "修复大文件上传超时：总超时从 600s 提升至 3600s；新增无进度停滞检测（600s 无新字节才超时），避免大文件误判超时",
+      "v0.1.22": "修复内存泄露：gRPC channel 构造失败时自动关闭，添加 __del__ 安全网；插件卸载时清理 sys.modules/sys.path 污染；可变类属性移至实例级别"
     }
   },
   "EmbyMissingSubscribe": {
     "name": "Emby 遗漏集订阅",
     "description": "扫描 Emby 媒体库中的遗漏剧集，自动添加 MoviePilot 订阅",
     "labels": "Emby,订阅,遗漏集,媒体库",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "icon": "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png",
     "author": "baranwang",
     "level": 2,
     "history": {
-      "v1.0.0": "初始版本：扫描 Emby 遗漏剧集，自动按剧集 + 季创建 MoviePilot 订阅"
+      "v1.0.0": "初始版本：扫描 Emby 遗漏剧集，自动按剧集 + 季创建 MoviePilot 订阅",
+      "v1.0.1": "修复内存泄露：可变类属性移至实例级别初始化，避免热重载时引用残留"
     }
   }
 }

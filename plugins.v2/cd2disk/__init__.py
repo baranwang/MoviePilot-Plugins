@@ -28,16 +28,22 @@ def _load_local_module(module_name: str, file_path: Path):
 def _install_clouddrive_shim():
     """
     兼容旧导入路径：from clouddrive.proto import CloudDrive_pb2
+    返回注入的信息，供后续清理使用
     """
     plugin_dir = Path(__file__).resolve().parent
     pb2_file = plugin_dir / "clouddrive_pb2.py"
     pb2_grpc_file = plugin_dir / "clouddrive_pb2_grpc.py"
 
-    if not pb2_file.exists() or not pb2_grpc_file.exists():
-        return
+    injected_modules = []
+    injected_sys_path = None
 
-    if str(plugin_dir) not in sys.path:
-        sys.path.insert(0, str(plugin_dir))
+    if not pb2_file.exists() or not pb2_grpc_file.exists():
+        return injected_modules, injected_sys_path
+
+    plugin_dir_str = str(plugin_dir)
+    if plugin_dir_str not in sys.path:
+        sys.path.insert(0, plugin_dir_str)
+        injected_sys_path = plugin_dir_str
 
     pb2_module = _load_local_module("clouddrive_pb2", pb2_file)
     pb2_grpc_module = _load_local_module("clouddrive_pb2_grpc", pb2_grpc_file)
@@ -49,13 +55,21 @@ def _install_clouddrive_shim():
     setattr(proto_pkg, "CloudDrive_pb2_grpc", pb2_grpc_module)
     setattr(clouddrive_pkg, "proto", proto_pkg)
 
+    shim_keys = [
+        "clouddrive",
+        "clouddrive.proto",
+        "clouddrive.proto.CloudDrive_pb2",
+        "clouddrive.proto.CloudDrive_pb2_grpc",
+    ]
     sys.modules["clouddrive"] = clouddrive_pkg
     sys.modules["clouddrive.proto"] = proto_pkg
     sys.modules["clouddrive.proto.CloudDrive_pb2"] = pb2_module
     sys.modules["clouddrive.proto.CloudDrive_pb2_grpc"] = pb2_grpc_module
 
+    return shim_keys, injected_sys_path
 
-_install_clouddrive_shim()
+
+_shim_modules, _shim_sys_path = _install_clouddrive_shim()
 
 try:
     from .cd2_api import Cd2Api
@@ -71,7 +85,7 @@ class Cd2Disk(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png"
     # 插件版本
-    plugin_version = "0.1.21"
+    plugin_version = "0.1.22"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -85,13 +99,13 @@ class Cd2Disk(_PluginBase):
 
     _enabled = False
     _disk_name = "CloudDrive2"
-    _cd2_api: Optional[Cd2Api] = None
-    _cd2_url = None
-    _cd2_api_key = None
 
     def __init__(self):
         super().__init__()
         self._disk_name = "CloudDrive2"
+        self._cd2_api: Optional[Cd2Api] = None
+        self._cd2_url = None
+        self._cd2_api_key = None
 
     def init_plugin(self, config: Optional[dict] = None):
         """
@@ -474,3 +488,13 @@ class Cd2Disk(_PluginBase):
         if self._cd2_api:
             self._cd2_api.close()
         self._cd2_api = None
+
+        # 清理 _install_clouddrive_shim 注入的 sys.modules 和 sys.path
+        global _shim_modules, _shim_sys_path
+        if _shim_modules:
+            for key in _shim_modules:
+                sys.modules.pop(key, None)
+            _shim_modules = []
+        if _shim_sys_path and _shim_sys_path in sys.path:
+            sys.path.remove(_shim_sys_path)
+            _shim_sys_path = None

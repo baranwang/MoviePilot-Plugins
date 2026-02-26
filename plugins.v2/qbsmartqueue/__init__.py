@@ -29,7 +29,7 @@ class QbSmartQueue(_PluginBase):
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
-    plugin_version = "1.1.0"
+    plugin_version = "1.1.1"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -51,8 +51,6 @@ class QbSmartQueue(_PluginBase):
     }
 
     # 私有属性
-    _event = threading.Event()
-    _scheduler: Optional[BackgroundScheduler] = None
     _enabled: bool = False
     _notify: bool = True
     _onlyonce: bool = False
@@ -61,11 +59,14 @@ class QbSmartQueue(_PluginBase):
     _priority_mode: str = "age"
     _enable_smart_skip: bool = True
     _mponly: bool = True
-    _download_paths: list = []
     _min_free_gb: float = 5
-    _downloaders: list = []
 
     def init_plugin(self, config: dict = None):
+        self._event = threading.Event()
+        self._scheduler: Optional[BackgroundScheduler] = None
+        self._download_paths: list = []
+        self._downloaders: list = []
+
         if config:
             self._enabled = config.get("enabled", False)
             self._notify = config.get("notify", True)

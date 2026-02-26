@@ -33,31 +33,30 @@ class MediaLibCovers(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.4.1"
+    plugin_version = "1.4.2"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "medialibcovers_"
     plugin_order = 2
     auth_level = 1
 
-    # 线程控制
-    _event = threading.Event()
-
     # 私有属性
-    _scheduler = None
     _enabled = False
     _onlyonce = False
     _cron = None
-    _selected_servers = []
-    _exclude_libraries = []
-    _title_config = ""
-    _covers_input = ""
-    _covers_output = ""
-    _covers_path: Path = None
-    _servers = None
-    _all_libraries = []
 
     def init_plugin(self, config: dict = None):
+        self._event = threading.Event()
+        self._scheduler = None
+        self._selected_servers = []
+        self._exclude_libraries = []
+        self._title_config = ""
+        self._covers_input = ""
+        self._covers_output = ""
+        self._covers_path: Path = None
+        self._servers = None
+        self._all_libraries = []
+
         self.mediaserver_helper = MediaServerHelper()
         data_path = self.get_data_path()
         (data_path / "fonts").mkdir(parents=True, exist_ok=True)

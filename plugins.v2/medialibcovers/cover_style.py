@@ -83,9 +83,10 @@ def get_dominant_hue(image_path: str) -> float:
     得到图片的整体颜色倾向。
     """
     try:
-        img = Image.open(image_path).convert("RGB")
-        img = img.resize((100, 100), Image.LANCZOS)
-        pixels = list(img.getdata())
+        with Image.open(image_path) as img:
+            img = img.convert("RGB")
+            img = img.resize((100, 100), Image.LANCZOS)
+            pixels = list(img.getdata())
 
         # 使用向量平均法计算平均色相（避免 0°/360° 边界问题）
         import math as _math
@@ -184,6 +185,7 @@ def create_poster_column(
     column = Image.new("RGBA", (poster_width, col_height), (0, 0, 0, 0))
 
     for i, path in enumerate(poster_paths):
+        poster = None
         try:
             poster = Image.open(path)
             poster = ImageOps.fit(poster, (poster_width, poster_height), method=Image.LANCZOS)
@@ -194,7 +196,9 @@ def create_poster_column(
             column.paste(poster, (0, y), poster)
         except Exception as e:
             logger.warning(f"处理海报 {path} 时出错: {e}")
-            continue
+        finally:
+            if poster is not None:
+                poster.close()
 
     return column
 
@@ -228,9 +232,11 @@ def create_rotated_poster_grid(poster_paths: List[str]) -> Image.Image:
         # 各列在容器内的位置
         cx, cy = COL_POSITIONS[col_idx]
         container.paste(column_img, (cx, cy), column_img)
+        column_img.close()
 
     # 旋转整个容器
     rotated = container.rotate(ROTATION_ANGLE, Image.BICUBIC, expand=True)
+    container.close()
 
     return rotated
 
@@ -374,6 +380,7 @@ def create_cover(
         grid_x = int(bbox_cx - poster_grid.width / 2)
         grid_y = int(bbox_cy - poster_grid.height / 2)
         canvas.paste(poster_grid, (grid_x, grid_y), poster_grid)
+        poster_grid.close()
 
         # 5. 绘制中英文标题
         canvas = draw_title(canvas, title_zh, title_en, zh_font_path, en_font_path)
@@ -385,6 +392,8 @@ def create_cover(
         except Exception:
             canvas = canvas.convert("RGB")
             canvas.save(buffer, format="JPEG", quality=85, optimize=True)
+        finally:
+            canvas.close()
 
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
 

@@ -30,7 +30,7 @@ class EmbyMissingSubscribe(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -43,21 +43,21 @@ class EmbyMissingSubscribe(_PluginBase):
     auth_level = 2
 
     # 私有属性
-    _event = threading.Event()
-    _scheduler: Optional[BackgroundScheduler] = None
     _enabled: bool = False
     _notify: bool = True
     _onlyonce: bool = False
     _cron: str = ""
-    _mediaservers: list = []
-    _libraries: list = []
     _skip_future: bool = True
 
     # 运行时
     mediaserver_helper = None
-    _all_libraries: list = []
 
     def init_plugin(self, config: dict = None):
+        self._event = threading.Event()
+        self._scheduler: Optional[BackgroundScheduler] = None
+        self._mediaservers: list = []
+        self._libraries: list = []
+        self._all_libraries: list = []
         self.mediaserver_helper = MediaServerHelper()
 
         if config:

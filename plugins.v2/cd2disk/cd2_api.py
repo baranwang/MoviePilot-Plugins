@@ -28,6 +28,7 @@ class Cd2Api:
 
     def __init__(self, cd2_url: str, api_key: str, disk_name: str):
         self._disk_name = disk_name
+        self._channel = None
 
         parsed = urlsplit(cd2_url)
         scheme = parsed.scheme or "http"
@@ -41,24 +42,31 @@ class Cd2Api:
             ('grpc.max_send_message_length', 20 * 1024 * 1024),
             ('grpc.max_receive_message_length', 20 * 1024 * 1024),
         ])
-        self._stub = CloudDrive_pb2_grpc.CloudDriveFileSrvStub(self._channel)
-        token = self._normalize_api_key(api_key)
-        if not token:
-            raise RuntimeError("CloudDrive2 API key 不能为空")
-        self._api_key = token
-        self._metadata_candidates: List[Tuple[str, List[Tuple[str, str]]]] = self._build_metadata_candidates(token)
-        self._active_metadata_index = 0
-        self._metadata: List[Tuple[str, str]] = self._metadata_candidates[self._active_metadata_index][1]
-        self._token_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:10]
-        self._token_length = len(token)
-        self._token_root = "/"
-        self._token_info_state = "unknown"
-        self._token_info_name = ""
-        self._token_allow_list_count: Optional[int] = None
-        self._auth_failed_logged = False
-        self._probe_system_info()
-        self._init_token_root()
-        self._preflight_authorized_access()
+        try:
+            self._stub = CloudDrive_pb2_grpc.CloudDriveFileSrvStub(self._channel)
+            token = self._normalize_api_key(api_key)
+            if not token:
+                raise RuntimeError("CloudDrive2 API key 不能为空")
+            self._api_key = token
+            self._metadata_candidates: List[Tuple[str, List[Tuple[str, str]]]] = self._build_metadata_candidates(token)
+            self._active_metadata_index = 0
+            self._metadata: List[Tuple[str, str]] = self._metadata_candidates[self._active_metadata_index][1]
+            self._token_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:10]
+            self._token_length = len(token)
+            self._token_root = "/"
+            self._token_info_state = "unknown"
+            self._token_info_name = ""
+            self._token_allow_list_count: Optional[int] = None
+            self._auth_failed_logged = False
+            self._probe_system_info()
+            self._init_token_root()
+            self._preflight_authorized_access()
+        except Exception:
+            self.close()
+            raise
+
+    def __del__(self):
+        self.close()
 
     @staticmethod
     def _normalize_api_key(api_key: str) -> str:
@@ -987,6 +995,8 @@ class Cd2Api:
 
     def close(self):
         try:
-            self._channel.close()
+            if self._channel is not None:
+                self._channel.close()
+                self._channel = None
         except Exception:
             pass
