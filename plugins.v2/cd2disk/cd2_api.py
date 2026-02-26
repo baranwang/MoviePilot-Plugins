@@ -875,6 +875,13 @@ class Cd2Api:
             i += 1
         return f"{value:.2f} {units[i]}"
 
+    def is_support_transtype(self, transtype: str) -> bool:
+        """
+        判断是否支持指定的传输类型。
+        供 MoviePilot 媒体整理时判断 storage_oper 能力。
+        """
+        return transtype in ("move", "copy")
+
     def usage(self) -> Optional[StorageUsage]:
         base_root = self._token_root or "/"
         logger.info(f"【Cd2Disk】开始空间统计, base_root={base_root}")
