@@ -30,7 +30,7 @@ class EmbyMissingSubscribe(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
     # 插件版本
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -59,6 +59,8 @@ class EmbyMissingSubscribe(_PluginBase):
         self._libraries: list = []
         self._all_libraries: list = []
         self.mediaserver_helper = MediaServerHelper()
+        self._media_chain = MediaChain()
+        self._subscribe_chain = SubscribeChain()
 
         if config:
             self._enabled = config.get("enabled", False)
@@ -266,7 +268,7 @@ class EmbyMissingSubscribe(_PluginBase):
                     year = str(episodes[0].get("ProductionYear", ""))
 
                     # 创建订阅
-                    sub_id, msg = SubscribeChain().add(
+                    sub_id, msg = self._subscribe_chain.add(
                         title=series_name,
                         year=year,
                         mtype=MediaType.TV,
@@ -394,7 +396,7 @@ class EmbyMissingSubscribe(_PluginBase):
         try:
             meta = MetaInfo(title=series_name)
             meta.type = MediaType.TV
-            mediainfo = MediaChain().recognize_media(meta=meta)
+            mediainfo = self._media_chain.recognize_media(meta=meta)
             if mediainfo and mediainfo.tmdb_id:
                 logger.info(
                     f"通过 MediaChain 识别到 TMDB ID: "

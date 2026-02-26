@@ -148,7 +148,10 @@ def create_background(width: int, height: int, base_color: Tuple[int, int, int])
         alpha = int(max_alpha * (y / height))
         draw.line([(0, y), (width, y)], fill=(0, 0, 0, alpha))
 
-    return Image.alpha_composite(bg, overlay)
+    result = Image.alpha_composite(bg, overlay)
+    bg.close()
+    overlay.close()
+    return result
 
 
 
@@ -283,8 +286,7 @@ def draw_title(
     """
     在画布左侧绘制中英文标题
     """
-    img = image.copy()
-    text_layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    text_layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(text_layer)
 
     # 中文标题
@@ -306,7 +308,9 @@ def draw_title(
             fill=(255, 255, 255, 204),  # #ffffffcc
         )
 
-    return Image.alpha_composite(img, text_layer)
+    result = Image.alpha_composite(image, text_layer)
+    text_layer.close()
+    return result
 
 
 # ============================================================
@@ -329,6 +333,8 @@ def create_cover(
     返回:
         base64 编码的 PNG 图片字符串，失败返回 None
     """
+    canvas = None
+    poster_grid = None
     try:
         title_zh, title_en = title
         zh_font_path, en_font_path = font_path
@@ -381,9 +387,12 @@ def create_cover(
         grid_y = int(bbox_cy - poster_grid.height / 2)
         canvas.paste(poster_grid, (grid_x, grid_y), poster_grid)
         poster_grid.close()
+        poster_grid = None
 
         # 5. 绘制中英文标题
+        old_canvas = canvas
         canvas = draw_title(canvas, title_zh, title_en, zh_font_path, en_font_path)
+        old_canvas.close()
 
         # 6. 导出为 base64
         buffer = io.BytesIO()
@@ -394,9 +403,15 @@ def create_cover(
             canvas.save(buffer, format="JPEG", quality=85, optimize=True)
         finally:
             canvas.close()
+            canvas = None
 
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
     except Exception as e:
         logger.error(f"创建封面时出错: {e}")
         return None
+    finally:
+        if poster_grid is not None:
+            poster_grid.close()
+        if canvas is not None:
+            canvas.close()

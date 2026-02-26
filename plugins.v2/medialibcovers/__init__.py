@@ -33,7 +33,7 @@ class MediaLibCovers(_PluginBase):
     plugin_name = "媒体库封面生成"
     plugin_desc = "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面"
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
-    plugin_version = "1.4.2"
+    plugin_version = "1.4.3"
     plugin_author = "baranwang"
     author_url = "https://github.com/baranwang/MoviePilot-Plugins"
     plugin_config_prefix = "medialibcovers_"
@@ -830,3 +830,5 @@ class MediaLibCovers(_PluginBase):
                 self._scheduler = None
         except Exception as e:
             logger.error(f"停止服务失败: {e}")
+        self._servers = None
+        self._all_libraries = []

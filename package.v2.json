@@ -3,7 +3,7 @@
     "name": "媒体库封面生成",
     "description": "自动为 Emby / Jellyfin 媒体库生成多图旋转海报封面",
     "labels": "媒体库,封面,Emby,Jellyfin",
-    "version": "1.4.2",
+    "version": "1.4.3",
     "icon": "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png",
     "author": "baranwang",
     "level": 1,
@@ -15,14 +15,15 @@
       "v1.3.0": "只取剧/电影/合集级别海报；按发行时间排序；生成封面 webp 压缩",
       "v1.3.1": "修复合集库获取媒体项失败",
       "v1.4.0": "合集库专用处理：自动展开 BoxSet 获取子项目电影海报",
-      "v1.4.2": "修复内存泄露：PIL Image 对象显式关闭，中间图片对象及时释放；可变类属性移至实例级别初始化"
+      "v1.4.2": "修复内存泄露：PIL Image 对象显式关闭，中间图片对象及时释放；可变类属性移至实例级别初始化",
+      "v1.4.3": "修复内存泄露：cover_style 中 create_background/draw_title 中间 Image 未关闭；create_cover 异常路径资源泄漏；stop_service 释放服务器引用"
     }
   },
   "QbSmartQueue": {
     "name": "qBittorrent 队列调度",
     "description": "按下载体积动态调度 qBittorrent 队列，自动排队放行，防止磁盘爆满",
     "labels": "下载,qBittorrent,队列管理",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "icon": "Qbittorrent_A.png",
     "author": "baranwang",
     "level": 2,
@@ -30,7 +31,8 @@
       "v1.0.1": "初始版本：体积调度、溢出保护、小文件插队、防死锁、磁盘空间检测",
       "v1.0.2": "修复了 UI 布局问题，优化了配置项名称和提示信息",
       "v1.1.0": "修复放行时未预估磁盘空间导致多种子同时下载磁盘写满的问题；增加磁盘空间预检和虚拟空间扣减机制；防死锁逻辑增加空间安全检查",
-      "v1.1.1": "修复内存泄露：可变类属性移至实例级别初始化，避免热重载时引用残留"
+      "v1.1.1": "修复内存泄露：可变类属性移至实例级别初始化，避免热重载时引用残留",
+      "v1.1.2": "修复内存泄露：DownloaderHelper 缓存为实例属性复用，避免每次调度重复创建"
     }
   },
   "Cd2Disk": {
@@ -71,13 +73,14 @@
     "name": "Emby 遗漏集订阅",
     "description": "扫描 Emby 媒体库中的遗漏剧集，自动添加 MoviePilot 订阅",
     "labels": "Emby,订阅,遗漏集,媒体库",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "icon": "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png",
     "author": "baranwang",
     "level": 2,
     "history": {
       "v1.0.0": "初始版本：扫描 Emby 遗漏剧集，自动按剧集 + 季创建 MoviePilot 订阅",
-      "v1.0.1": "修复内存泄露：可变类属性移至实例级别初始化，避免热重载时引用残留"
+      "v1.0.1": "修复内存泄露：可变类属性移至实例级别初始化，避免热重载时引用残留",
+      "v1.0.2": "修复内存泄露：MediaChain/SubscribeChain 缓存为实例属性复用，避免每次扫描重复创建"
     }
   }
 }

@@ -29,7 +29,7 @@ class QbSmartQueue(_PluginBase):
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
-    plugin_version = "1.1.1"
+    plugin_version = "1.1.2"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -66,6 +66,7 @@ class QbSmartQueue(_PluginBase):
         self._scheduler: Optional[BackgroundScheduler] = None
         self._download_paths: list = []
         self._downloaders: list = []
+        self._downloader_helper = DownloaderHelper()
 
         if config:
             self._enabled = config.get("enabled", False)
@@ -151,7 +152,7 @@ class QbSmartQueue(_PluginBase):
             logger.warning("尚未配置下载器，请检查配置")
             return None
 
-        services = DownloaderHelper().get_services(name_filters=self._downloaders)
+        services = self._downloader_helper.get_services(name_filters=self._downloaders)
         if not services:
             logger.warning("获取下载器实例失败，请检查配置")
             return None
@@ -160,7 +161,7 @@ class QbSmartQueue(_PluginBase):
         for service_name, service_info in services.items():
             if service_info.instance.is_inactive():
                 logger.warning(f"下载器 {service_name} 未连接，请检查配置")
-            elif not DownloaderHelper().is_downloader(
+            elif not self._downloader_helper.is_downloader(
                 service_type="qbittorrent", service=service_info
             ):
                 logger.warning(f"下载器 {service_name} 不是 qBittorrent 类型，跳过")
@@ -581,7 +582,7 @@ class QbSmartQueue(_PluginBase):
                                                     "title": config.name,
                                                     "value": config.name,
                                                 }
-                                                for config in DownloaderHelper()
+                                                for config in self._downloader_helper
                                                 .get_configs()
                                                 .values()
                                             ],
