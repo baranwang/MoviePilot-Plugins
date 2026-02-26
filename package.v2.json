@@ -71,17 +71,18 @@
     }
   },
   "EmbyMissingSubscribe": {
-    "name": "Emby 遗漏集订阅",
-    "description": "扫描 Emby 媒体库中的遗漏剧集，自动添加 MoviePilot 订阅",
-    "labels": "Emby,订阅,遗漏集,媒体库",
-    "version": "1.0.2",
+    "name": "Emby 缺失订阅",
+    "description": "扫描 Emby 媒体库中的遗漏剧集和电影合集（BoxSet），自动订阅缺失内容",
+    "labels": "Emby,订阅,遗漏集,合集,媒体库",
+    "version": "1.1.0",
     "icon": "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png",
     "author": "baranwang",
     "level": 2,
     "history": {
       "v1.0.0": "初始版本：扫描 Emby 遗漏剧集，自动按剧集 + 季创建 MoviePilot 订阅",
       "v1.0.1": "修复内存泄露：可变类属性移至实例级别初始化，避免热重载时引用残留",
-      "v1.0.2": "修复内存泄露：MediaChain/SubscribeChain 缓存为实例属性复用，避免每次扫描重复创建"
+      "v1.0.2": "修复内存泄露：MediaChain/SubscribeChain 缓存为实例属性复用，避免每次扫描重复创建",
+      "v1.1.0": "新增电影合集（BoxSet）缺失订阅：扫描 Emby BoxSet，通过 TMDB Collection API 查找缺失电影并自动订阅；插件更名为 Emby 缺失订阅，支持遗漏剧集与合集缺失电影两个独立开关"
     }
   }
 }
