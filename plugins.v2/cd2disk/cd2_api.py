@@ -713,10 +713,15 @@ class Cd2Api:
 
         file_handle = 0
         try:
-            create_resp = self._call_authed(
-                "CreateFile",
-                CloudDrive_pb2.CreateFileRequest(parentPath=remote_dir, fileName=target_name),
-            )
+            try:
+                create_resp = self._call_authed(
+                    "CreateFile",
+                    CloudDrive_pb2.CreateFileRequest(parentPath=remote_dir, fileName=target_name),
+                )
+            except Exception as e:
+                logger.error(f"【Cd2Disk】上传失败 [CreateFile]: {remote_path}, {e}")
+                return None
+
             file_handle = int(getattr(create_resp, "fileHandle", 0) or 0)
             if file_handle <= 0:
                 logger.error(f"【Cd2Disk】上传失败，创建远端文件句柄失败: {remote_path}")
@@ -725,19 +730,26 @@ class Cd2Api:
             offset = 0
             with open(local_path, "rb") as f:
                 while True:
-                    data = f.read(10 * 1024 * 1024)
+                    data = f.read(3 * 1024 * 1024)
                     if not data:
                         break
-                    write_resp = self._call_authed(
-                        "WriteToFile",
-                        CloudDrive_pb2.WriteFileRequest(
-                            fileHandle=file_handle,
-                            startPos=offset,
-                            length=len(data),
-                            buffer=data,
-                            closeFile=False,
-                        ),
-                    )
+                    try:
+                        write_resp = self._call_authed(
+                            "WriteToFile",
+                            CloudDrive_pb2.WriteFileRequest(
+                                fileHandle=file_handle,
+                                startPos=offset,
+                                length=len(data),
+                                buffer=data,
+                                closeFile=False,
+                            ),
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"【Cd2Disk】上传失败 [WriteToFile]: {remote_path}, "
+                            f"offset={offset}, chunk={len(data)}, {e}"
+                        )
+                        return None
                     bytes_written = int(getattr(write_resp, "bytesWritten", len(data)) or 0)
                     if bytes_written != len(data):
                         logger.error(
@@ -747,10 +759,14 @@ class Cd2Api:
                         return None
                     offset += bytes_written
 
-            close_resp = self._call_authed(
-                "CloseFile",
-                CloudDrive_pb2.CloseFileRequest(fileHandle=file_handle),
-            )
+            try:
+                close_resp = self._call_authed(
+                    "CloseFile",
+                    CloudDrive_pb2.CloseFileRequest(fileHandle=file_handle),
+                )
+            except Exception as e:
+                logger.error(f"【Cd2Disk】上传失败 [CloseFile]: {remote_path}, {e}")
+                return None
             if not self._is_success(close_resp):
                 logger.error(f"【Cd2Disk】上传失败，关闭文件失败: {remote_path}")
                 return None
