@@ -39,7 +39,7 @@
     "name": "CloudDrive2 储存",
     "description": "接入 CloudDrive2 作为 MoviePilot 储存模块，支持浏览、上传、下载、重命名、删除与空间统计",
     "labels": "网盘,CloudDrive2,储存",
-    "version": "0.1.23",
+    "version": "0.1.24",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/clouddrive.png",
     "author": "baranwang",
     "level": 2,
@@ -67,7 +67,8 @@
       "v0.1.20": "修复上传 gRPC 消息超限：写入块大小从 8MB 降至 3MB，适配 CD2 服务端 4MB 限制；提升客户端侧 gRPC 消息上限",
       "v0.1.21": "修复大文件上传超时：总超时从 600s 提升至 3600s；新增无进度停滞检测（600s 无新字节才超时），避免大文件误判超时",
       "v0.1.22": "修复内存泄露：gRPC channel 构造失败时自动关闭，添加 __del__ 安全网；插件卸载时清理 sys.modules/sys.path 污染；可变类属性移至实例级别",
-      "v0.1.23": "修复媒体整理报错 is_support_transtype：在 Cd2Api 中补充 is_support_transtype 方法，供框架判断传输类型能力"
+      "v0.1.23": "修复媒体整理报错 is_support_transtype：在 Cd2Api 中补充 is_support_transtype 方法，供框架判断传输类型能力",
+      "v0.1.24": "修复大文件上传断连：gRPC 通道增加 keepalive 心跳参数防止长时间传输被断开；上传写入块从 3 MB 提升至 10 MB 减少 RPC 调用次数"
     }
   },
   "EmbyMissingSubscribe": {

@@ -41,6 +41,10 @@ class Cd2Api:
         self._channel = grpc.insecure_channel(host, options=[
             ('grpc.max_send_message_length', 20 * 1024 * 1024),
             ('grpc.max_receive_message_length', 20 * 1024 * 1024),
+            ('grpc.keepalive_time_ms', 30_000),
+            ('grpc.keepalive_timeout_ms', 10_000),
+            ('grpc.keepalive_permit_without_calls', 1),
+            ('grpc.http2.max_pings_without_data', 0),
         ])
         try:
             self._stub = CloudDrive_pb2_grpc.CloudDriveFileSrvStub(self._channel)
@@ -721,7 +725,7 @@ class Cd2Api:
             offset = 0
             with open(local_path, "rb") as f:
                 while True:
-                    data = f.read(3 * 1024 * 1024)
+                    data = f.read(10 * 1024 * 1024)
                     if not data:
                         break
                     write_resp = self._call_authed(
