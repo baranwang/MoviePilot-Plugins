@@ -29,7 +29,7 @@ class QbSmartQueue(_PluginBase):
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
-    plugin_version = "1.1.2"
+    plugin_version = "1.1.5"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -58,6 +58,9 @@ class QbSmartQueue(_PluginBase):
     _max_capacity_gb: float = 35
     _priority_mode: str = "age"
     _enable_smart_skip: bool = True
+    _enable_low_speed_tolerance: bool = True
+    _low_speed_threshold_kib: int = 100
+    _low_speed_stalled_only: bool = False
     _mponly: bool = True
     _min_free_gb: float = 5
 
@@ -76,6 +79,15 @@ class QbSmartQueue(_PluginBase):
             self._max_capacity_gb = float(config.get("max_capacity_gb") or 35)
             self._priority_mode = config.get("priority_mode") or "age"
             self._enable_smart_skip = config.get("enable_smart_skip", True)
+            self._enable_low_speed_tolerance = config.get(
+                "enable_low_speed_tolerance", True
+            )
+            self._low_speed_threshold_kib = int(
+                config.get("low_speed_threshold_kib") or 100
+            )
+            self._low_speed_stalled_only = config.get(
+                "low_speed_stalled_only", False
+            )
             self._mponly = config.get("mponly", True)
             self._download_paths = config.get("download_paths") or []
             self._min_free_gb = float(config.get("min_free_gb") or 5)
@@ -100,6 +112,9 @@ class QbSmartQueue(_PluginBase):
                 "max_capacity_gb": self._max_capacity_gb,
                 "priority_mode": self._priority_mode,
                 "enable_smart_skip": self._enable_smart_skip,
+                "enable_low_speed_tolerance": self._enable_low_speed_tolerance,
+                "low_speed_threshold_kib": self._low_speed_threshold_kib,
+                "low_speed_stalled_only": self._low_speed_stalled_only,
                 "mponly": self._mponly,
                 "download_paths": self._download_paths,
                 "min_free_gb": self._min_free_gb,
@@ -223,10 +238,7 @@ class QbSmartQueue(_PluginBase):
         max_capacity_bytes = self._max_capacity_gb * (1024 ** 3)
 
         # ── 1. 获取所有种子 ──
-        if self._mponly:
-            torrents, error = downloader.get_torrents(tags=settings.TORRENT_TAG)
-        else:
-            torrents, error = downloader.get_torrents()
+        torrents, error = self._fetch_torrents(downloader)
 
         if error:
             logger.error(f"[{service_name}] 获取种子列表失败: {error}")
@@ -236,54 +248,69 @@ class QbSmartQueue(_PluginBase):
             logger.debug(f"[{service_name}] 没有种子")
             return
 
+        free_space_map = self._get_free_space_map()
+
         # ── 2. 磁盘空间检查（按种子 save_path 匹配监控目录，精准暂停） ──
         low_space_paths: list = []
-        if self._download_paths:
+        if free_space_map:
             min_free_bytes = self._min_free_gb * (1024 ** 3)
-            for dp in self._download_paths:
-                free_bytes = SystemUtils.free_space(Path(dp))
-                if free_bytes < min_free_bytes:
-                    low_space_paths.append(dp)
-                    logger.warning(
-                        f"[{service_name}] 目录 {dp} 所在磁盘剩余空间 "
-                        f"{StringUtils.str_filesize(free_bytes)} "
-                        f"低于阈值 {self._min_free_gb} GB"
+            low_space_paths = [
+                dp for dp, free_bytes in free_space_map.items()
+                if free_bytes < min_free_bytes
+            ]
+            for dp in low_space_paths:
+                logger.warning(
+                    f"[{service_name}] 目录 {dp} 所在磁盘剩余空间 "
+                    f"{StringUtils.str_filesize(free_space_map.get(dp, 0))} "
+                    f"低于阈值 {self._min_free_gb} GB"
+                )
+
+        low_space_match_cache: Dict[str, bool] = {}
+        if low_space_paths:
+            # 只暂停 save_path 属于低空间目录的活跃种子
+            paused_by_disk = []
+            paused_by_disk_ids = []
+            for t in torrents:
+                if t.get("state") not in self._ACTIVE_DL_STATES:
+                    continue
+                t_save = t.get("save_path", "")
+                if not t_save:
+                    continue
+
+                is_low_space_path = low_space_match_cache.get(t_save)
+                if is_low_space_path is None:
+                    is_low_space_path = self._is_path_under_paths(
+                        save_path=t_save, paths=low_space_paths
                     )
-            if low_space_paths:
-                # 只暂停 save_path 属于低空间目录的活跃种子
-                paused_by_disk = []
-                for t in torrents:
-                    if t.get("state") not in self._ACTIVE_DL_STATES:
+                    low_space_match_cache[t_save] = is_low_space_path
+
+                if is_low_space_path:
+                    t_hash = t.get("hash")
+                    if not t_hash:
                         continue
-                    t_save = t.get("save_path", "")
-                    if t_save and any(
-                        t_save == lp or t_save.startswith(lp.rstrip("/") + "/")
-                        for lp in low_space_paths
-                    ):
-                        downloader.stop_torrents(ids=[t.get("hash")])
-                        paused_by_disk.append(t.get("name", ""))
-                if paused_by_disk:
-                    logger.info(
-                        f"[{service_name}] 磁盘空间不足，暂停 {len(paused_by_disk)} 个种子"
+                    paused_by_disk_ids.append(t_hash)
+                    paused_by_disk.append(t.get("name", ""))
+
+            self._stop_torrent_ids(downloader, paused_by_disk_ids)
+            if paused_by_disk:
+                logger.info(
+                    f"[{service_name}] 磁盘空间不足，暂停 {len(paused_by_disk)} 个种子"
+                )
+                if self._notify:
+                    self.post_message(
+                        mtype=NotificationType.SiteMessage,
+                        title="【qBittorrent 智能体积调度】",
+                        text=(
+                            f"下载器: {service_name}\n"
+                            f"磁盘空间不足目录: {', '.join(low_space_paths)}\n"
+                            f"已暂停 {len(paused_by_disk)} 个对应种子:\n"
+                            + ", ".join(paused_by_disk[:5])
+                        ),
                     )
-                    if self._notify:
-                        self.post_message(
-                            mtype=NotificationType.SiteMessage,
-                            title="【qBittorrent 智能体积调度】",
-                            text=(
-                                f"下载器: {service_name}\n"
-                                f"磁盘空间不足目录: {', '.join(low_space_paths)}\n"
-                                f"已暂停 {len(paused_by_disk)} 个对应种子:\n"
-                                + ", ".join(paused_by_disk[:5])
-                            ),
-                        )
-                    # 重新获取种子列表（状态已变化）
-                    if self._mponly:
-                        torrents, _ = downloader.get_torrents(tags=settings.TORRENT_TAG)
-                    else:
-                        torrents, _ = downloader.get_torrents()
-                    if not torrents:
-                        return
+                # 重新获取种子列表（状态已变化）
+                torrents, _ = self._fetch_torrents(downloader)
+                if not torrents:
+                    return
 
         # ── 3. 分类种子 ──
         active_torrents = []
@@ -297,8 +324,7 @@ class QbSmartQueue(_PluginBase):
 
         active_left = sum(t.get("amount_left", 0) for t in active_torrents)
 
-        # ── 3.1 构建磁盘虚拟剩余空间 map ──
-        free_space_map = self._get_free_space_map()
+        # ── 3.1 使用已采样的磁盘虚拟剩余空间 map ──
 
         logger.info(
             f"[{service_name}] 活跃下载: {len(active_torrents)} 个, "
@@ -313,26 +339,54 @@ class QbSmartQueue(_PluginBase):
             overflow_candidates = sorted(
                 active_torrents, key=lambda x: x.get("added_on", 0), reverse=True
             )
+
+            if self._enable_low_speed_tolerance and self._low_speed_threshold_kib > 0:
+                normal_candidates = []
+                low_speed_candidates = []
+                for torrent in overflow_candidates:
+                    if self._is_low_speed_torrent(torrent):
+                        low_speed_candidates.append(torrent)
+                    else:
+                        normal_candidates.append(torrent)
+
+                if low_speed_candidates:
+                    tolerance_scope = "stalledDL" if self._low_speed_stalled_only else "全部活跃状态"
+                    logger.info(
+                        f"[{service_name}] 低速宽容生效：优先保留 {len(low_speed_candidates)} 个低速种子 "
+                        f"(阈值 {self._low_speed_threshold_kib} KiB/s, 范围 {tolerance_scope})"
+                    )
+                overflow_candidates = normal_candidates + low_speed_candidates
+
+            overflow_stop_ids = []
+            paused_low_speed_count = 0
             for t in overflow_candidates:
                 if active_left <= max_capacity_bytes:
                     break
                 t_hash = t.get("hash")
+                if not t_hash:
+                    continue
                 t_left = t.get("amount_left", 0)
                 t_name = t.get("name", "")
-                downloader.stop_torrents(ids=[t_hash])
+                overflow_stop_ids.append(t_hash)
                 active_left -= t_left
                 paused_by_overflow.append(t_name)
+                if self._is_low_speed_torrent(t):
+                    paused_low_speed_count += 1
                 logger.info(
                     f"[{service_name}] 溢出保护：暂停 {t_name} "
                     f"(剩余 {StringUtils.str_filesize(t_left)})"
                 )
+
+            if paused_low_speed_count:
+                logger.warning(
+                    f"[{service_name}] 低速宽容回退：仍暂停 {paused_low_speed_count} 个低速种子以满足容量上限"
+                )
+
+            self._stop_torrent_ids(downloader, overflow_stop_ids)
             # 溢出暂停的种子加入待调度队列
             if paused_by_overflow:
                 # 重新获取种子状态（暂停后状态会变化）
-                if self._mponly:
-                    torrents, _ = downloader.get_torrents(tags=settings.TORRENT_TAG)
-                else:
-                    torrents, _ = downloader.get_torrents()
+                torrents, _ = self._fetch_torrents(downloader)
                 paused_torrents = [
                     t for t in (torrents or [])
                     if t.get("state") in self._PAUSED_DL_STATES
@@ -353,6 +407,8 @@ class QbSmartQueue(_PluginBase):
         released = []
         skipped = []
         skipped_disk = []
+        release_ids = []
+        matched_path_cache: Dict[str, Optional[str]] = {}
         for t in paused_torrents:
             t_left = t.get("amount_left", 0)
             t_name = t.get("name", "")
@@ -361,25 +417,38 @@ class QbSmartQueue(_PluginBase):
             t_save = t.get("save_path", "")
 
             # 跳过 save_path 处于低空间磁盘的种子，不放行
-            if low_space_paths and t_save and any(
-                t_save == lp or t_save.startswith(lp.rstrip("/") + "/")
-                for lp in low_space_paths
-            ):
-                logger.debug(
-                    f"[{service_name}] 磁盘空间不足，跳过放行: {t_name} "
-                    f"(目录 {t_save})"
-                )
-                continue
+            if low_space_paths and t_save:
+                is_low_space_path = low_space_match_cache.get(t_save)
+                if is_low_space_path is None:
+                    is_low_space_path = self._is_path_under_paths(
+                        save_path=t_save, paths=low_space_paths
+                    )
+                    low_space_match_cache[t_save] = is_low_space_path
+
+                if is_low_space_path:
+                    logger.debug(
+                        f"[{service_name}] 磁盘空间不足，跳过放行: {t_name} "
+                        f"(目录 {t_save})"
+                    )
+                    continue
 
             if t_left == 0:
                 # 已下载完成但处于暂停状态，直接恢复
-                downloader.start_torrents(ids=[t_hash])
-                released.append(t_name)
-                logger.info(f"[{service_name}] 恢复已完成种子: {t_name}")
+                if t_hash:
+                    release_ids.append(t_hash)
+                    released.append(t_name)
+                    logger.info(f"[{service_name}] 恢复已完成种子: {t_name}")
                 continue
 
+            matched_path = matched_path_cache.get(t_save)
+            if matched_path is None and t_save not in matched_path_cache:
+                matched_path = self._match_download_path(t_save)
+                matched_path_cache[t_save] = matched_path
+
             # 磁盘空间预检：计算放行后磁盘是否还能容纳
-            if not self._check_disk_budget(t_save, t_left, free_space_map):
+            if not self._check_disk_budget(
+                t_save, t_left, free_space_map, matched_path
+            ):
                 skipped_disk.append(t_name)
                 logger.info(
                     f"[{service_name}] 磁盘空间不足以容纳，跳过: {t_name} "
@@ -389,16 +458,19 @@ class QbSmartQueue(_PluginBase):
                 continue
 
             if active_left + t_left <= max_capacity_bytes:
-                downloader.start_torrents(ids=[t_hash])
-                active_left += t_left
-                # 扣减虚拟磁盘空间
-                self._deduct_disk_budget(t_save, t_left, free_space_map)
-                released.append(t_name)
-                logger.info(
-                    f"[{service_name}] 放行: {t_name} "
-                    f"(体积 {StringUtils.str_filesize(t_size)}, "
-                    f"剩余 {StringUtils.str_filesize(t_left)})"
-                )
+                if t_hash:
+                    release_ids.append(t_hash)
+                    active_left += t_left
+                    # 扣减虚拟磁盘空间
+                    self._deduct_disk_budget(
+                        t_save, t_left, free_space_map, matched_path
+                    )
+                    released.append(t_name)
+                    logger.info(
+                        f"[{service_name}] 放行: {t_name} "
+                        f"(体积 {StringUtils.str_filesize(t_size)}, "
+                        f"剩余 {StringUtils.str_filesize(t_left)})"
+                    )
             else:
                 if self._enable_smart_skip:
                     skipped.append(t_name)
@@ -419,27 +491,45 @@ class QbSmartQueue(_PluginBase):
                 c_save = candidate.get("save_path", "")
                 c_left = candidate.get("amount_left", 0)
                 # 跳过低空间目录的种子
-                if low_space_paths and c_save and any(
-                    c_save == lp or c_save.startswith(lp.rstrip("/") + "/")
-                    for lp in low_space_paths
-                ):
-                    continue
+                if low_space_paths and c_save:
+                    is_low_space_path = low_space_match_cache.get(c_save)
+                    if is_low_space_path is None:
+                        is_low_space_path = self._is_path_under_paths(
+                            save_path=c_save, paths=low_space_paths
+                        )
+                        low_space_match_cache[c_save] = is_low_space_path
+                    if is_low_space_path:
+                        continue
+
+                matched_path = matched_path_cache.get(c_save)
+                if matched_path is None and c_save not in matched_path_cache:
+                    matched_path = self._match_download_path(c_save)
+                    matched_path_cache[c_save] = matched_path
+
                 # 磁盘空间安全检查：即使防死锁也不能让磁盘写满
-                if not self._check_disk_budget(c_save, c_left, free_space_map):
+                if not self._check_disk_budget(
+                    c_save, c_left, free_space_map, matched_path
+                ):
                     logger.warning(
                         f"[{service_name}] 防死锁：磁盘空间不足，跳过 {candidate.get('name', '')} "
                         f"(需要 {StringUtils.str_filesize(c_left)}, 目录 {c_save})"
                     )
                     continue
                 c_hash = candidate.get("hash")
+                if not c_hash:
+                    continue
                 c_name = candidate.get("name", "")
-                downloader.start_torrents(ids=[c_hash])
-                self._deduct_disk_budget(c_save, c_left, free_space_map)
+                release_ids.append(c_hash)
+                self._deduct_disk_budget(
+                    c_save, c_left, free_space_map, matched_path
+                )
                 released.append(c_name)
                 logger.info(
                     f"[{service_name}] 防死锁：强制放行 {c_name}"
                 )
                 break
+
+        self._start_torrent_ids(downloader, release_ids)
 
         # ── 8. 通知 ──
         if self._notify and (released or paused_by_overflow or skipped_disk):
@@ -471,6 +561,53 @@ class QbSmartQueue(_PluginBase):
                 text="\n".join(text_parts),
             )
 
+    def _fetch_torrents(self, downloader: Any) -> Tuple[Optional[List[dict]], Optional[str]]:
+        if self._mponly:
+            return downloader.get_torrents(tags=settings.TORRENT_TAG)
+        return downloader.get_torrents()
+
+    @staticmethod
+    def _is_path_under_paths(save_path: str, paths: List[str]) -> bool:
+        if not save_path or not paths:
+            return False
+
+        for base_path in paths:
+            normalized_path = base_path.rstrip("/")
+            if save_path == normalized_path or save_path.startswith(normalized_path + "/"):
+                return True
+        return False
+
+    @staticmethod
+    def _get_download_speed_bps(torrent: Dict[str, Any]) -> int:
+        for field in ("dlspeed", "dl_speed", "download_speed"):
+            speed = torrent.get(field)
+            if isinstance(speed, (int, float)):
+                return max(int(speed), 0)
+        return 0
+
+    def _is_low_speed_torrent(self, torrent: Dict[str, Any]) -> bool:
+        if not self._enable_low_speed_tolerance:
+            return False
+        if self._low_speed_threshold_kib <= 0:
+            return False
+        if self._low_speed_stalled_only and torrent.get("state") != "stalledDL":
+            return False
+        threshold_bps = self._low_speed_threshold_kib * 1024
+        speed_bps = self._get_download_speed_bps(torrent)
+        return speed_bps <= threshold_bps
+
+    @staticmethod
+    def _stop_torrent_ids(downloader: Any, torrent_ids: List[str]):
+        valid_ids = [torrent_id for torrent_id in torrent_ids if torrent_id]
+        if valid_ids:
+            downloader.stop_torrents(ids=valid_ids)
+
+    @staticmethod
+    def _start_torrent_ids(downloader: Any, torrent_ids: List[str]):
+        valid_ids = [torrent_id for torrent_id in torrent_ids if torrent_id]
+        if valid_ids:
+            downloader.start_torrents(ids=valid_ids)
+
     def _get_free_space_map(self) -> Dict[str, int]:
         """
         获取各监控目录的当前磁盘剩余空间，返回 {路径: 剩余字节} 的 map。
@@ -498,7 +635,11 @@ class QbSmartQueue(_PluginBase):
         return None
 
     def _check_disk_budget(
-        self, save_path: str, needed: int, free_map: Dict[str, int]
+        self,
+        save_path: str,
+        needed: int,
+        free_map: Dict[str, int],
+        matched_path: Optional[str] = None,
     ) -> bool:
         """
         检查 save_path 所在磁盘能否容纳 needed 字节。
@@ -507,7 +648,8 @@ class QbSmartQueue(_PluginBase):
         """
         if not free_map:
             return True
-        matched_path = self._match_download_path(save_path)
+        if matched_path is None:
+            matched_path = self._match_download_path(save_path)
         if matched_path is None:
             return True  # save_path 不属于任何监控目录，跳过检查
         available = free_map.get(matched_path, 0)
@@ -515,12 +657,17 @@ class QbSmartQueue(_PluginBase):
         return (available - needed) >= min_free_bytes
 
     def _deduct_disk_budget(
-        self, save_path: str, used: int, free_map: Dict[str, int]
+        self,
+        save_path: str,
+        used: int,
+        free_map: Dict[str, int],
+        matched_path: Optional[str] = None,
     ):
         """
         从虚拟空间 map 中扣减已放行种子的体积。
         """
-        matched_path = self._match_download_path(save_path)
+        if matched_path is None:
+            matched_path = self._match_download_path(save_path)
         if matched_path is not None and matched_path in free_map:
             free_map[matched_path] -= used
 
@@ -682,6 +829,55 @@ class QbSmartQueue(_PluginBase):
                             },
                         ],
                     },
+                    # ── 低速宽容 ──
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "enable_low_speed_tolerance",
+                                            "label": "低速种子宽容",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "low_speed_threshold_kib",
+                                            "label": "低速阈值 (KiB/s)",
+                                            "placeholder": "100",
+                                            "type": "number",
+                                            "hint": "溢出保护时优先保留低于该速度的种子",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "low_speed_stalled_only",
+                                            "label": "仅 stalledDL 生效",
+                                            "hint": "开启后仅对 stalledDL 状态应用低速宽容",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
                     # ── 磁盘保护 ──
                     {
                         "component": "VRow",
@@ -747,7 +943,8 @@ class QbSmartQueue(_PluginBase):
                                                 "2. 智能放行：按策略排序，逐个放行不超限的任务\n\n"
                                                 "3. 小文件插队：大文件塞不下时跳过，放行后面小文件\n\n"
                                                 "4. 防死锁：无活跃下载时强制放行第一个\n\n"
-                                                "5. 磁盘保护：剩余空间低于阈值时暂停所有下载"
+                                                "5. 磁盘保护：剩余空间低于阈值时仅暂停对应目录下载\n\n"
+                                                "6. 低速宽容：溢出保护优先保留低速种子（可限定仅 stalledDL 生效）"
                                             ),
                                         },
                                     }
@@ -765,6 +962,9 @@ class QbSmartQueue(_PluginBase):
             "max_capacity_gb": 35,
             "priority_mode": "age",
             "enable_smart_skip": True,
+            "enable_low_speed_tolerance": True,
+            "low_speed_threshold_kib": 100,
+            "low_speed_stalled_only": False,
             "mponly": True,
             "download_paths": [],
             "min_free_gb": 5,
