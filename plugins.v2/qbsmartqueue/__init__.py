@@ -29,7 +29,7 @@ class QbSmartQueue(_PluginBase):
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
-    plugin_version = "1.1.5"
+    plugin_version = "2.0.0"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -56,8 +56,10 @@ class QbSmartQueue(_PluginBase):
     _onlyonce: bool = False
     _cron: str = "*/2 * * * *"
     _max_capacity_gb: float = 35
-    _priority_mode: str = "age"
-    _enable_smart_skip: bool = True
+    _weight_wait: int = 5
+    _weight_size: int = 3
+    _weight_seeders: int = 3
+    _weight_progress: int = 2
     _enable_low_speed_tolerance: bool = True
     _low_speed_threshold_kib: int = 100
     _low_speed_stalled_only: bool = False
@@ -77,8 +79,10 @@ class QbSmartQueue(_PluginBase):
             self._onlyonce = config.get("onlyonce", False)
             self._cron = config.get("cron") or "*/2 * * * *"
             self._max_capacity_gb = float(config.get("max_capacity_gb") or 35)
-            self._priority_mode = config.get("priority_mode") or "age"
-            self._enable_smart_skip = config.get("enable_smart_skip", True)
+            self._weight_wait = int(config.get("weight_wait") or 5)
+            self._weight_size = int(config.get("weight_size") or 3)
+            self._weight_seeders = int(config.get("weight_seeders") or 3)
+            self._weight_progress = int(config.get("weight_progress") or 2)
             self._enable_low_speed_tolerance = config.get(
                 "enable_low_speed_tolerance", True
             )
@@ -110,8 +114,10 @@ class QbSmartQueue(_PluginBase):
                 "onlyonce": False,
                 "cron": self._cron,
                 "max_capacity_gb": self._max_capacity_gb,
-                "priority_mode": self._priority_mode,
-                "enable_smart_skip": self._enable_smart_skip,
+                "weight_wait": self._weight_wait,
+                "weight_size": self._weight_size,
+                "weight_seeders": self._weight_seeders,
+                "weight_progress": self._weight_progress,
                 "enable_low_speed_tolerance": self._enable_low_speed_tolerance,
                 "low_speed_threshold_kib": self._low_speed_threshold_kib,
                 "low_speed_stalled_only": self._low_speed_stalled_only,
@@ -397,11 +403,8 @@ class QbSmartQueue(_PluginBase):
                 ]
                 active_left = sum(t.get("amount_left", 0) for t in active_torrents)
 
-        # ── 5. 排序等待队列 ──
-        if self._priority_mode == "size":
-            paused_torrents.sort(key=lambda x: x.get("total_size", 0))
-        else:
-            paused_torrents.sort(key=lambda x: x.get("added_on", 0))
+        # ── 5. 综合权重排序等待队列 ──
+        paused_torrents = self._sort_by_weighted_score(paused_torrents)
 
         # ── 6. 放行逻辑 ──
         released = []
@@ -472,14 +475,11 @@ class QbSmartQueue(_PluginBase):
                         f"剩余 {StringUtils.str_filesize(t_left)})"
                     )
             else:
-                if self._enable_smart_skip:
-                    skipped.append(t_name)
-                    logger.debug(
-                        f"[{service_name}] 跳过大文件: {t_name} "
-                        f"(剩余 {StringUtils.str_filesize(t_left)})"
-                    )
-                else:
-                    break
+                skipped.append(t_name)
+                logger.debug(
+                    f"[{service_name}] 容量不足，跳过: {t_name} "
+                    f"(剩余 {StringUtils.str_filesize(t_left)})"
+                )
 
         # ── 7. 防死锁：无活跃下载且有等待任务时，强制放行第一个（排除低空间目录） ──
         if (
@@ -545,7 +545,7 @@ class QbSmartQueue(_PluginBase):
                     + ", ".join(released[:5])
                 )
             if skipped:
-                text_parts.append(f"跳过大文件 {len(skipped)} 个")
+                text_parts.append(f"容量不足跳过 {len(skipped)} 个")
             if skipped_disk:
                 text_parts.append(
                     f"磁盘空间不足跳过 {len(skipped_disk)} 个: "
@@ -560,6 +560,85 @@ class QbSmartQueue(_PluginBase):
                 title="【qBittorrent 智能体积调度】",
                 text="\n".join(text_parts),
             )
+
+    def _sort_by_weighted_score(self, torrents: List[dict]) -> List[dict]:
+        """
+        综合权重排序：按等待时间、体积、做种数、完成度四维度加权评分。
+        每个维度归一化到 0~1，乘以权重后求和，分数越高越优先放行。
+        """
+        if not torrents:
+            return torrents
+
+        total_weight = (
+            self._weight_wait + self._weight_size
+            + self._weight_seeders + self._weight_progress
+        )
+        if total_weight <= 0:
+            # 所有权重为 0 时按添加时间兜底
+            return sorted(torrents, key=lambda x: x.get("added_on", 0))
+
+        # ── 收集各维度原始值 ──
+        added_on_list = [t.get("added_on", 0) for t in torrents]
+        size_list = [t.get("total_size", 0) for t in torrents]
+        seeders_list = [t.get("num_complete", 0) for t in torrents]
+        progress_list = []
+        for t in torrents:
+            total = t.get("total_size", 0)
+            left = t.get("amount_left", 0)
+            progress_list.append(
+                (total - left) / total if total > 0 else 0.0
+            )
+
+        # ── 归一化辅助函数 ──
+        def normalize(values: list, reverse: bool = False) -> list:
+            """
+            将列表归一化到 0~1。reverse=True 时值越小分越高。
+            """
+            min_v = min(values)
+            max_v = max(values)
+            span = max_v - min_v
+            if span == 0:
+                return [0.5] * len(values)
+            if reverse:
+                return [(max_v - v) / span for v in values]
+            return [(v - min_v) / span for v in values]
+
+        # ── 归一化 ──
+        # 等待时间：added_on 越小（越早添加）分越高
+        norm_wait = normalize(added_on_list, reverse=True)
+        # 体积：越小分越高
+        norm_size = normalize(size_list, reverse=True)
+        # 做种数：越大分越高
+        norm_seeders = normalize(seeders_list, reverse=False)
+        # 完成度：越高分越高
+        norm_progress = normalize(progress_list, reverse=False)
+
+        # ── 加权求和 ──
+        scored = []
+        for i, t in enumerate(torrents):
+            score = (
+                self._weight_wait * norm_wait[i]
+                + self._weight_size * norm_size[i]
+                + self._weight_seeders * norm_seeders[i]
+                + self._weight_progress * norm_progress[i]
+            )
+            scored.append((score, t))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        if logger.isEnabledFor(20):  # INFO
+            top = scored[:3]
+            for rank, (score, t) in enumerate(top, 1):
+                logger.info(
+                    f"排队评分 #{rank}: {t.get('name', '')} "
+                    f"(得分 {score:.2f}, "
+                    f"等待 {norm_wait[torrents.index(t)]:.2f}, "
+                    f"体积 {norm_size[torrents.index(t)]:.2f}, "
+                    f"做种 {norm_seeders[torrents.index(t)]:.2f}, "
+                    f"进度 {norm_progress[torrents.index(t)]:.2f})"
+                )
+
+        return [t for _, t in scored]
 
     def _fetch_torrents(self, downloader: Any) -> Tuple[Optional[List[dict]], Optional[str]]:
         if self._mponly:
@@ -774,46 +853,80 @@ class QbSmartQueue(_PluginBase):
                             },
                         ],
                     },
-                    # ── 排队策略 + 仅 MP 任务 ──
+                    # ── 排队权重 ──
                     {
                         "component": "VRow",
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
-                                        "component": "VSelect",
+                                        "component": "VTextField",
                                         "props": {
-                                            "model": "priority_mode",
-                                            "label": "排队策略",
-                                            "items": [
-                                                {
-                                                    "title": "先来先到",
-                                                    "value": "age",
-                                                },
-                                                {
-                                                    "title": "小文件优先",
-                                                    "value": "size",
-                                                },
-                                            ],
+                                            "model": "weight_wait",
+                                            "label": "等待时间权重",
+                                            "placeholder": "5",
+                                            "type": "number",
+                                            "hint": "等得越久越优先",
                                         },
                                     }
                                 ],
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
-                                        "component": "VSwitch",
+                                        "component": "VTextField",
                                         "props": {
-                                            "model": "enable_smart_skip",
-                                            "label": "小文件插队",
+                                            "model": "weight_size",
+                                            "label": "体积权重",
+                                            "placeholder": "3",
+                                            "type": "number",
+                                            "hint": "越小越优先",
                                         },
                                     }
                                 ],
                             },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "weight_seeders",
+                                            "label": "做种数权重",
+                                            "placeholder": "3",
+                                            "type": "number",
+                                            "hint": "做种越多越优先",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "weight_progress",
+                                            "label": "完成度权重",
+                                            "placeholder": "2",
+                                            "type": "number",
+                                            "hint": "越接近完成越优先",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    # ── 仅 MP 任务 ──
+                    {
+                        "component": "VRow",
+                        "content": [
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
@@ -940,11 +1053,11 @@ class QbSmartQueue(_PluginBase):
                                             "text": (
                                                 "根据正在下载任务的剩余体积总和动态管理 qBittorrent 队列：\n\n"
                                                 "1. 溢出保护：活跃下载超限时暂停最新任务\n\n"
-                                                "2. 智能放行：按策略排序，逐个放行不超限的任务\n\n"
-                                                "3. 小文件插队：大文件塞不下时跳过，放行后面小文件\n\n"
-                                                "4. 防死锁：无活跃下载时强制放行第一个\n\n"
-                                                "5. 磁盘保护：剩余空间低于阈值时仅暂停对应目录下载\n\n"
-                                                "6. 低速宽容：溢出保护优先保留低速种子（可限定仅 stalledDL 生效）"
+                                                "2. 综合排序：按等待时间、体积、做种数、完成度加权评分，逐个放行\n\n"
+                                                "3. 防死锁：无活跃下载时强制放行第一个\n\n"
+                                                "4. 磁盘保护：剩余空间低于阈值时仅暂停对应目录下载\n\n"
+                                                "5. 低速宽容：溢出保护优先保留低速种子\n\n"
+                                                "权重说明：每个维度 0~10，0 = 不参与排序，值越大影响越大"
                                             ),
                                         },
                                     }
@@ -960,8 +1073,10 @@ class QbSmartQueue(_PluginBase):
             "onlyonce": False,
             "cron": "*/2 * * * *",
             "max_capacity_gb": 35,
-            "priority_mode": "age",
-            "enable_smart_skip": True,
+            "weight_wait": 5,
+            "weight_size": 3,
+            "weight_seeders": 3,
+            "weight_progress": 2,
             "enable_low_speed_tolerance": True,
             "low_speed_threshold_kib": 100,
             "low_speed_stalled_only": False,
