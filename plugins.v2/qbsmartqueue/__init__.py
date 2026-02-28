@@ -29,7 +29,7 @@ class QbSmartQueue(_PluginBase):
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
-    plugin_version = "2.0.0"
+    plugin_version = "2.0.1"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -626,17 +626,16 @@ class QbSmartQueue(_PluginBase):
 
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        if logger.isEnabledFor(20):  # INFO
-            top = scored[:3]
-            for rank, (score, t) in enumerate(top, 1):
-                logger.info(
-                    f"排队评分 #{rank}: {t.get('name', '')} "
-                    f"(得分 {score:.2f}, "
-                    f"等待 {norm_wait[torrents.index(t)]:.2f}, "
-                    f"体积 {norm_size[torrents.index(t)]:.2f}, "
-                    f"做种 {norm_seeders[torrents.index(t)]:.2f}, "
-                    f"进度 {norm_progress[torrents.index(t)]:.2f})"
-                )
+        top = scored[:3]
+        for rank, (score, t) in enumerate(top, 1):
+            logger.info(
+                f"排队评分 #{rank}: {t.get('name', '')} "
+                f"(得分 {score:.2f}, "
+                f"等待 {norm_wait[torrents.index(t)]:.2f}, "
+                f"体积 {norm_size[torrents.index(t)]:.2f}, "
+                f"做种 {norm_seeders[torrents.index(t)]:.2f}, "
+                f"进度 {norm_progress[torrents.index(t)]:.2f})"
+            )
 
         return [t for _, t in scored]
 
