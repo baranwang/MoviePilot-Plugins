@@ -91,5 +91,17 @@
       "v1.0.2": "修复内存泄露：MediaChain/SubscribeChain 缓存为实例属性复用，避免每次扫描重复创建",
       "v1.1.0": "新增电影合集（BoxSet）缺失订阅：扫描 Emby BoxSet，通过 TMDB Collection API 查找缺失电影并自动订阅；插件更名为 Emby 缺失订阅，支持遗漏剧集与合集缺失电影两个独立开关"
     }
+  },
+  "RssDownload": {
+    "name": "RSS 直接下载",
+    "description": "定时刷新 RSS 报文，匹配规则后直接下载，不检查媒体库是否已存在",
+    "labels": "RSS,下载",
+    "version": "1.0.0",
+    "icon": "rss.png",
+    "author": "baranwang",
+    "level": 2,
+    "history": {
+      "v1.0.0": "初始版本：RSS 匹配直接下载，跳过媒体库存在性检查"
+    }
   }
 }
