@@ -29,7 +29,7 @@ class RssDownload(_PluginBase):
     # 插件图标
     plugin_icon = "rss.png"
     # 插件版本
-    plugin_version = "1.1.0"
+    plugin_version = "1.1.1"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -577,13 +577,14 @@ class RssDownload(_PluginBase):
         downloadchain = DownloadChain()
         for url in self._address.split("\n"):
             # 处理每一个 RSS 链接
-            if not url:
+            if not url.strip():
                 continue
+            url = url.strip()
             logger.info(f"开始刷新 RSS：{url} ...")
-            results = RssHelper().parse(url, proxy=self._proxy)
+            results = RssHelper().parse(url, proxy=self._proxy, ua=settings.USER_AGENT)
             if not results:
                 logger.error(f"未获取到 RSS 数据：{url}")
-                return
+                continue
             # 过滤规则
             filter_groups = self.systemconfig.get(
                 SystemConfigKey.SubscribeFilterRuleGroups

@@ -96,13 +96,14 @@
     "name": "RSS 直接下载",
     "description": "定时刷新 RSS 报文，匹配规则后直接下载，不检查媒体库是否已存在",
     "labels": "RSS,下载",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "icon": "rss.png",
     "author": "baranwang",
     "level": 2,
     "history": {
       "v1.0.0": "初始版本：RSS 匹配直接下载，跳过媒体库存在性检查",
-      "v1.1.0": "分离去重与展示：新增 downloaded 记录按 enclosure 去重，清理历史不影响去重；新增重置下载记录开关"
+      "v1.1.0": "分离去重与展示：新增 downloaded 记录按 enclosure 去重，清理历史不影响去重；新增重置下载记录开关",
+      "v1.1.1": "修复 RSS 解析失败：传入 User-Agent 避免 PT 站拒绝请求；单个 RSS 源失败不再中断其余源处理"
     }
   }
 }
