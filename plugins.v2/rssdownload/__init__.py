@@ -29,7 +29,7 @@ class RssDownload(_PluginBase):
     # 插件图标
     plugin_icon = "rss.png"
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -58,6 +58,8 @@ class RssDownload(_PluginBase):
     _clearflag: bool = False
     _save_path: str = ""
     _size_range: str = ""
+    _clear_downloaded: bool = False
+    _clear_downloaded_flag: bool = False
 
     def init_plugin(self, config: dict = None):
         # 停止现有任务
@@ -76,6 +78,7 @@ class RssDownload(_PluginBase):
             self._proxy = config.get("proxy")
             self._filter = config.get("filter")
             self._clear = config.get("clear")
+            self._clear_downloaded = config.get("clear_downloaded")
             self._save_path = config.get("save_path")
             self._size_range = config.get("size_range")
 
@@ -94,13 +97,15 @@ class RssDownload(_PluginBase):
                 self._scheduler.print_jobs()
                 self._scheduler.start()
 
-        if self._onlyonce or self._clear:
+        if self._onlyonce or self._clear or self._clear_downloaded:
             # 关闭一次性开关
             self._onlyonce = False
             # 记录清理缓存设置
             self._clearflag = self._clear
+            self._clear_downloaded_flag = self._clear_downloaded
             # 关闭清理缓存开关
             self._clear = False
+            self._clear_downloaded = False
             # 保存设置
             self.__update_config()
 
@@ -329,7 +334,7 @@ class RssDownload(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VSwitch",
@@ -342,29 +347,39 @@ class RssDownload(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {
-                                    "cols": 12,
-                                    "md": 4,
-                                },
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VSwitch",
                                         "props": {
                                             "model": "filter",
-                                            "label": "使用订阅优先级规则",
+                                            "label": "使用优先级规则",
                                         },
                                     }
                                 ],
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VSwitch",
                                         "props": {
                                             "model": "clear",
                                             "label": "清理历史记录",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "clear_downloaded",
+                                            "label": "重置下载记录",
                                         },
                                     }
                                 ],
@@ -383,6 +398,7 @@ class RssDownload(_PluginBase):
             "exclude": "",
             "proxy": False,
             "clear": False,
+            "clear_downloaded": False,
             "filter": False,
             "save_path": "",
             "size_range": "",
@@ -536,6 +552,7 @@ class RssDownload(_PluginBase):
                 "exclude": self._exclude,
                 "proxy": self._proxy,
                 "clear": self._clear,
+                "clear_downloaded": self._clear_downloaded,
                 "filter": self._filter,
                 "save_path": self._save_path,
                 "size_range": self._size_range,
@@ -553,6 +570,10 @@ class RssDownload(_PluginBase):
             history = []
         else:
             history: List[dict] = self.get_data("history") or []
+        if self._clear_downloaded_flag:
+            downloaded = set()
+        else:
+            downloaded: set = set(self.get_data("downloaded") or [])
         downloadchain = DownloadChain()
         for url in self._address.split("\n"):
             # 处理每一个 RSS 链接
@@ -576,8 +597,10 @@ class RssDownload(_PluginBase):
                     link = result.get("link")
                     size = result.get("size")
                     pubdate: datetime.datetime = result.get("pubdate")
-                    # 检查是否处理过
-                    if not title or title in [h.get("key") for h in history]:
+                    # 检查是否处理过（按 enclosure 去重）
+                    if not title or not enclosure:
+                        continue
+                    if enclosure in downloaded:
                         continue
                     # 检查包含规则
                     if self._include and not re.search(
@@ -647,6 +670,8 @@ class RssDownload(_PluginBase):
                     if not result:
                         logger.error(f"{title} 下载失败")
                         continue
+                    # 记录已下载（去重用）
+                    downloaded.add(enclosure)
                     # 存储历史记录
                     history.append(
                         {
@@ -669,8 +694,10 @@ class RssDownload(_PluginBase):
             logger.info(f"RSS {url} 刷新完成")
         # 保存历史记录
         self.save_data("history", history)
+        self.save_data("downloaded", list(downloaded))
         # 缓存只清理一次
         self._clearflag = False
+        self._clear_downloaded_flag = False
 
     def __log_and_notify_error(self, message):
         """
