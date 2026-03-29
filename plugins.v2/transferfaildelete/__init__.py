@@ -1,6 +1,5 @@
 # plugins.v2/transferfaildelete/__init__.py
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from app.chain.storage import StorageChain
 from app.core.event import eventmanager, Event
@@ -137,7 +136,7 @@ class TransferFailDelete(_PluginBase):
 
         transferinfo = event_data.get("transferinfo")
         download_hash = event_data.get("download_hash")
-        fail_reason = transferinfo.message if transferinfo else "未知"
+        fail_reason = getattr(transferinfo, "message", None) or "未知"
 
         logger.info(f"整理失败，准备删除源文件：{fileitem.path}，原因：{fail_reason}")
 
@@ -149,9 +148,7 @@ class TransferFailDelete(_PluginBase):
             # 清理下载记录
             if download_hash:
                 try:
-                    DownloadHistoryOper().delete_file_by_fullpath(
-                        Path(fileitem.path).as_posix()
-                    )
+                    DownloadHistoryOper().delete_file_by_fullpath(fileitem.path)
                     eventmanager.send_event(
                         EventType.DownloadFileDeleted,
                         {"src": fileitem.path, "hash": download_hash},
@@ -171,7 +168,7 @@ class TransferFailDelete(_PluginBase):
                 self.post_message(
                     mtype=NotificationType.Manual,
                     title="整理失败源文件删除失败",
-                    text=f"文件：{fileitem.path}\n请手动处理",
+                    text=f"文件：{fileitem.path}\n整理失败原因：{fail_reason}\n请手动处理",
                 )
 
     def stop_service(self):
