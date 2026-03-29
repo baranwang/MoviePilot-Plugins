@@ -105,5 +105,17 @@
       "v1.1.0": "分离去重与展示：新增 downloaded 记录按 enclosure 去重，清理历史不影响去重；新增重置下载记录开关",
       "v1.1.1": "修复 RSS 解析失败：传入 User-Agent 避免 PT 站拒绝请求；单个 RSS 源失败不再中断其余源处理"
     }
+  },
+  "TransferFailDelete": {
+    "name": "整理失败源文件清理",
+    "description": "媒体整理失败时自动删除源文件，与手动「删除转移记录和源文件」逻辑一致",
+    "labels": "整理,清理,源文件",
+    "version": "1.0.0",
+    "icon": "Eraser.png",
+    "author": "baranwang",
+    "level": 2,
+    "history": {
+      "v1.0.0": "初始版本：监听 TransferFailed 事件，整理失败时自动删除源文件"
+    }
   }
 }
