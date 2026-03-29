@@ -27,13 +27,16 @@
 与 `DELETE /api/v1/history/transfer?deletesrc=true` 保持一致：
 
 ```
-StorageChain().delete_media_file(fileitem)
+result = StorageChain().delete_media_file(fileitem)  # 返回 bool
   → 调用对应存储后端删除文件（本地 / 网盘）
   → 递归清理空的父目录（不超过配置的下载根目录）
 
-若 download_hash 非空：
-  DownloadFiles.delete_by_fullpath(path)
+若 result=True 且 download_hash 非空：
+  DownloadHistoryOper().delete_file_by_fullpath(path)  # 内部管理 DB session
   eventmanager.send_event(DownloadFileDeleted, {"src": path, "hash": hash})
+
+若 result=False：
+  记录错误日志，跳过下载记录清理，发送删除失败通知
 ```
 
 ---
@@ -71,24 +74,32 @@ on_transfer_failed(event):
   transferinfo = event.event_data.get('transferinfo')
   download_hash = event.event_data.get('download_hash')
 
-  # 删除文件
+  # 删除文件（返回 bool）
   result = StorageChain().delete_media_file(fileitem)
 
-  # 清理下载记录
-  if download_hash:
-    DownloadFiles.delete_by_fullpath(db, Path(fileitem.path).as_posix())
-    eventmanager.send_event(DownloadFileDeleted, {
-      "src": fileitem.path,
-      "hash": download_hash
-    })
-
-  # 通知
-  if self._notify:
-    self.post_message(
-      mtype=NotificationType.Manual,
-      title="整理失败源文件已删除",
-      text=f"文件：{fileitem.path}\n原因：{transferinfo.message if transferinfo else '未知'}"
-    )
+  if result:
+    # 清理下载记录（DownloadHistoryOper 内部管理 DB session）
+    if download_hash:
+      DownloadHistoryOper().delete_file_by_fullpath(Path(fileitem.path).as_posix())
+      eventmanager.send_event(DownloadFileDeleted, {
+        "src": fileitem.path,
+        "hash": download_hash
+      })
+    # 成功通知
+    if self._notify:
+      self.post_message(
+        mtype=NotificationType.Manual,
+        title="整理失败源文件已删除",
+        text=f"文件：{fileitem.path}\n原因：{transferinfo.message if transferinfo else '未知'}"
+      )
+  else:
+    logger.error(f"整理失败源文件删除失败：{fileitem.path}")
+    if self._notify:
+      self.post_message(
+        mtype=NotificationType.Manual,
+        title="整理失败源文件删除失败",
+        text=f"文件：{fileitem.path}\n请手动处理"
+      )
 ```
 
 ---
@@ -120,7 +131,7 @@ package.v2.json            # 新增 TransferFailDelete 条目
 |---|---|---|
 | `_PluginBase` | MoviePilot 核心 | 插件基类 |
 | `StorageChain` | MoviePilot 核心 | 删除文件（含存储后端分发） |
-| `DownloadFiles` | MoviePilot 核心 | 清理下载文件记录 |
+| `DownloadHistoryOper` (`app.db.downloadhistory_oper`) | MoviePilot 核心 | 清理下载文件记录（内部管理 DB session） |
 | `EventType.TransferFailed` | MoviePilot v2 | 整理失败事件 |
 | `EventType.DownloadFileDeleted` | MoviePilot 核心 | 通知下载器文件已删除 |
 | `NotificationType` | MoviePilot 核心 | 发送通知 |
