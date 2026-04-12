@@ -29,7 +29,7 @@ class QbSmartQueue(_PluginBase):
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
-    plugin_version = "2.2.0"
+    plugin_version = "2.2.1"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -272,24 +272,26 @@ class QbSmartQueue(_PluginBase):
             logger.debug(f"[{service_name}] 没有种子")
             return
 
-        free_space_map = self._get_free_space_map()
+        path_free_space_map, disk_free_space_map, path_disk_map = (
+            self._get_free_space_maps()
+        )
+        matched_path_cache: Dict[str, Optional[str]] = {}
 
         # ── 2. 磁盘空间检查（按种子 save_path 匹配监控目录，精准暂停） ──
         low_space_paths: list = []
-        if free_space_map:
+        if path_free_space_map:
             min_free_bytes = self._min_free_gb * (1024 ** 3)
             low_space_paths = [
-                dp for dp, free_bytes in free_space_map.items()
+                dp for dp, free_bytes in path_free_space_map.items()
                 if free_bytes < min_free_bytes
             ]
             for dp in low_space_paths:
                 logger.warning(
                     f"[{service_name}] 目录 {dp} 所在磁盘剩余空间 "
-                    f"{StringUtils.str_filesize(free_space_map.get(dp, 0))} "
+                    f"{StringUtils.str_filesize(path_free_space_map.get(dp, 0))} "
                     f"低于阈值 {self._min_free_gb} GB"
                 )
 
-        low_space_match_cache: Dict[str, bool] = {}
         if low_space_paths:
             # 只暂停 save_path 属于低空间目录的活跃种子
             paused_by_disk = []
@@ -306,14 +308,12 @@ class QbSmartQueue(_PluginBase):
                 if not t_save:
                     continue
 
-                is_low_space_path = low_space_match_cache.get(t_save)
-                if is_low_space_path is None:
-                    is_low_space_path = self._is_path_under_paths(
-                        save_path=t_save, paths=low_space_paths
-                    )
-                    low_space_match_cache[t_save] = is_low_space_path
+                matched_path = matched_path_cache.get(t_save)
+                if matched_path is None and t_save not in matched_path_cache:
+                    matched_path = self._match_download_path(t_save)
+                    matched_path_cache[t_save] = matched_path
 
-                if is_low_space_path:
+                if matched_path and matched_path in low_space_paths:
                     t_hash = t.get("hash")
                     if not t_hash:
                         continue
@@ -503,7 +503,6 @@ class QbSmartQueue(_PluginBase):
         skipped = []
         skipped_disk = []
         release_ids = []
-        matched_path_cache: Dict[str, Optional[str]] = {}
         for t in paused_torrents:
             t_left = t.get("amount_left", 0)
             t_name = t.get("name", "")
@@ -515,6 +514,10 @@ class QbSmartQueue(_PluginBase):
                 logger.debug(f"[{service_name}] 跳过死种: {t_name}")
                 continue
             t_save = t.get("save_path", "")
+            matched_path = matched_path_cache.get(t_save)
+            if matched_path is None and t_save not in matched_path_cache:
+                matched_path = self._match_download_path(t_save)
+                matched_path_cache[t_save] = matched_path
 
             if t_left == 0:
                 # 已下载完成但处于暂停状态，直接恢复（无需磁盘空间，不受低空间限制）
@@ -525,29 +528,19 @@ class QbSmartQueue(_PluginBase):
                 continue
 
             # 跳过 save_path 处于低空间磁盘的种子，不放行
-            if low_space_paths and t_save:
-                is_low_space_path = low_space_match_cache.get(t_save)
-                if is_low_space_path is None:
-                    is_low_space_path = self._is_path_under_paths(
-                        save_path=t_save, paths=low_space_paths
-                    )
-                    low_space_match_cache[t_save] = is_low_space_path
-
-                if is_low_space_path:
-                    logger.debug(
-                        f"[{service_name}] 磁盘空间不足，跳过放行: {t_name} "
-                        f"(目录 {t_save})"
-                    )
-                    continue
-
-            matched_path = matched_path_cache.get(t_save)
-            if matched_path is None and t_save not in matched_path_cache:
-                matched_path = self._match_download_path(t_save)
-                matched_path_cache[t_save] = matched_path
+            if matched_path and matched_path in low_space_paths:
+                logger.debug(
+                    f"[{service_name}] 磁盘空间不足，跳过放行: {t_name} "
+                    f"(目录 {t_save})"
+                )
+                continue
 
             # 磁盘空间预检：计算放行后磁盘是否还能容纳
             if not self._check_disk_budget(
-                t_save, t_left, free_space_map, matched_path
+                needed=t_left,
+                disk_free_map=disk_free_space_map,
+                matched_path=matched_path,
+                path_disk_map=path_disk_map,
             ):
                 skipped_disk.append(t_name)
                 logger.info(
@@ -563,7 +556,10 @@ class QbSmartQueue(_PluginBase):
                     active_left += t_left
                     # 扣减虚拟磁盘空间
                     self._deduct_disk_budget(
-                        t_save, t_left, free_space_map, matched_path
+                        used=t_left,
+                        disk_free_map=disk_free_space_map,
+                        matched_path=matched_path,
+                        path_disk_map=path_disk_map,
                     )
                     released.append(t_name)
                     logger.info(
@@ -587,25 +583,21 @@ class QbSmartQueue(_PluginBase):
             for candidate in paused_torrents:
                 c_save = candidate.get("save_path", "")
                 c_left = candidate.get("amount_left", 0)
-                # 跳过低空间目录的种子
-                if low_space_paths and c_save:
-                    is_low_space_path = low_space_match_cache.get(c_save)
-                    if is_low_space_path is None:
-                        is_low_space_path = self._is_path_under_paths(
-                            save_path=c_save, paths=low_space_paths
-                        )
-                        low_space_match_cache[c_save] = is_low_space_path
-                    if is_low_space_path:
-                        continue
-
                 matched_path = matched_path_cache.get(c_save)
                 if matched_path is None and c_save not in matched_path_cache:
                     matched_path = self._match_download_path(c_save)
                     matched_path_cache[c_save] = matched_path
 
+                # 跳过低空间目录的种子
+                if matched_path and matched_path in low_space_paths:
+                    continue
+
                 # 磁盘空间安全检查：即使防死锁也不能让磁盘写满
                 if not self._check_disk_budget(
-                    c_save, c_left, free_space_map, matched_path
+                    needed=c_left,
+                    disk_free_map=disk_free_space_map,
+                    matched_path=matched_path,
+                    path_disk_map=path_disk_map,
                 ):
                     logger.warning(
                         f"[{service_name}] 防死锁：磁盘空间不足，跳过 {candidate.get('name', '')} "
@@ -618,7 +610,10 @@ class QbSmartQueue(_PluginBase):
                 c_name = candidate.get("name", "")
                 release_ids.append(c_hash)
                 self._deduct_disk_budget(
-                    c_save, c_left, free_space_map, matched_path
+                    used=c_left,
+                    disk_free_map=disk_free_space_map,
+                    matched_path=matched_path,
+                    path_disk_map=path_disk_map,
                 )
                 released.append(c_name)
                 logger.info(
@@ -809,68 +804,108 @@ class QbSmartQueue(_PluginBase):
         if valid_ids:
             downloader.start_torrents(ids=valid_ids)
 
-    def _get_free_space_map(self) -> Dict[str, int]:
+    @staticmethod
+    def _get_disk_key(path: str) -> str:
         """
-        获取各监控目录的当前磁盘剩余空间，返回 {路径: 剩余字节} 的 map。
-        此 map 在放行过程中会被动态扣减，用于追踪"虚拟剩余空间"。
+        获取路径所在磁盘设备标识。
+        优先使用 st_dev，避免同盘多目录被当成多份独立空间。
         """
-        free_map: Dict[str, int] = {}
+        candidate = Path(path).expanduser()
+        for target in [candidate, *candidate.parents]:
+            try:
+                return f"dev:{target.stat().st_dev}"
+            except OSError:
+                continue
+        normalized_path = str(candidate).rstrip("/") or "/"
+        return f"path:{normalized_path}"
+
+    def _get_free_space_maps(
+        self,
+    ) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, str]]:
+        """
+        获取监控目录当前磁盘剩余空间。
+        返回:
+        - path_free_map: {监控目录: 剩余字节}
+        - disk_free_map: {磁盘设备: 剩余字节}
+        - path_disk_map: {监控目录: 磁盘设备}
+        其中 disk_free_map 会在放行过程中动态扣减，用于追踪"虚拟剩余空间"。
+        """
+        path_free_map: Dict[str, int] = {}
+        disk_free_map: Dict[str, int] = {}
+        path_disk_map: Dict[str, str] = {}
         if not self._download_paths:
-            return free_map
+            return path_free_map, disk_free_map, path_disk_map
         for dp in self._download_paths:
             free_bytes = SystemUtils.free_space(Path(dp))
-            free_map[dp] = free_bytes
+            path_free_map[dp] = free_bytes
+            disk_key = self._get_disk_key(dp)
+            path_disk_map[dp] = disk_key
+            if disk_key in disk_free_map:
+                disk_free_map[disk_key] = min(disk_free_map[disk_key], free_bytes)
+            else:
+                disk_free_map[disk_key] = free_bytes
             logger.debug(f"磁盘空间: {dp} -> {StringUtils.str_filesize(free_bytes)}")
-        return free_map
+        return path_free_map, disk_free_map, path_disk_map
 
     def _match_download_path(self, save_path: str) -> Optional[str]:
         """
         将种子的 save_path 匹配到监控目录列表中对应的路径。
-        返回匹配到的监控路径，未匹配到返回 None。
+        返回匹配到的最具体监控路径，未匹配到返回 None。
         """
         if not self._download_paths or not save_path:
             return None
+        matched_path = None
+        matched_length = -1
         for dp in self._download_paths:
-            if save_path == dp or save_path.startswith(dp.rstrip("/") + "/"):
-                return dp
-        return None
+            normalized_dp = dp.rstrip("/") or "/"
+            if save_path == normalized_dp or save_path.startswith(normalized_dp + "/"):
+                if len(normalized_dp) > matched_length:
+                    matched_path = dp
+                    matched_length = len(normalized_dp)
+        return matched_path
 
     def _check_disk_budget(
         self,
-        save_path: str,
         needed: int,
-        free_map: Dict[str, int],
+        disk_free_map: Dict[str, int],
         matched_path: Optional[str] = None,
+        path_disk_map: Optional[Dict[str, str]] = None,
     ) -> bool:
         """
-        检查 save_path 所在磁盘能否容纳 needed 字节。
+        检查 matched_path 所在磁盘能否容纳 needed 字节。
         基于虚拟剩余空间 map 判断：放行后剩余空间必须 >= min_free_gb。
-        未配置监控目录或 save_path 不属于任何监控目录时，默认放行。
+        未配置监控目录或未匹配到监控目录时，默认放行。
         """
-        if not free_map:
+        if not disk_free_map:
             return True
         if matched_path is None:
-            matched_path = self._match_download_path(save_path)
-        if matched_path is None:
             return True  # save_path 不属于任何监控目录，跳过检查
-        available = free_map.get(matched_path, 0)
+        disk_key = (
+            path_disk_map.get(matched_path)
+            if path_disk_map is not None else self._get_disk_key(matched_path)
+        )
+        available = disk_free_map.get(disk_key, 0)
         min_free_bytes = self._min_free_gb * (1024 ** 3)
         return (available - needed) >= min_free_bytes
 
     def _deduct_disk_budget(
         self,
-        save_path: str,
         used: int,
-        free_map: Dict[str, int],
+        disk_free_map: Dict[str, int],
         matched_path: Optional[str] = None,
+        path_disk_map: Optional[Dict[str, str]] = None,
     ):
         """
         从虚拟空间 map 中扣减已放行种子的体积。
         """
         if matched_path is None:
-            matched_path = self._match_download_path(save_path)
-        if matched_path is not None and matched_path in free_map:
-            free_map[matched_path] -= used
+            return
+        disk_key = (
+            path_disk_map.get(matched_path)
+            if path_disk_map is not None else self._get_disk_key(matched_path)
+        )
+        if disk_key in disk_free_map:
+            disk_free_map[disk_key] -= used
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         return [
