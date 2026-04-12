@@ -29,7 +29,7 @@ class QbSmartQueue(_PluginBase):
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
-    plugin_version = "2.0.1"
+    plugin_version = "2.1.0"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -45,9 +45,15 @@ class QbSmartQueue(_PluginBase):
     _ACTIVE_DL_STATES = {
         "downloading", "stalledDL", "metaDL",
         "checkingDL", "forcedDL", "allocating",
+        "queuedDL",   # 已排队等待激活，占用容量名额，不可重复放行
+        "forcedMetaDL",
     }
     _PAUSED_DL_STATES = {
-        "pausedDL", "stoppedDL", "queuedDL",
+        "pausedDL", "stoppedDL",
+    }
+    # 强制下载状态：用户手动强制，豁免暂停操作（仍计入容量）
+    _FORCED_DL_STATES = {
+        "forcedDL", "forcedMetaDL",
     }
 
     # 私有属性
@@ -279,6 +285,11 @@ class QbSmartQueue(_PluginBase):
             for t in torrents:
                 if t.get("state") not in self._ACTIVE_DL_STATES:
                     continue
+                if t.get("state") in self._FORCED_DL_STATES:
+                    logger.debug(
+                        f"[{service_name}] 强制下载种子豁免磁盘暂停: {t.get('name', '')}"
+                    )
+                    continue
                 t_save = t.get("save_path", "")
                 if not t_save:
                     continue
@@ -342,8 +353,14 @@ class QbSmartQueue(_PluginBase):
         # ── 4. 溢出保护：活跃下载超限则暂停最新的任务 ──
         paused_by_overflow = []
         if active_left > max_capacity_bytes:
+            forced_torrents = [t for t in active_torrents if t.get("state") in self._FORCED_DL_STATES]
+            if forced_torrents:
+                logger.debug(
+                    f"[{service_name}] 溢出保护豁免 {len(forced_torrents)} 个强制下载种子"
+                )
             overflow_candidates = sorted(
-                active_torrents, key=lambda x: x.get("added_on", 0), reverse=True
+                [t for t in active_torrents if t.get("state") not in self._FORCED_DL_STATES],
+                key=lambda x: x.get("added_on", 0), reverse=True
             )
 
             if self._enable_low_speed_tolerance and self._low_speed_threshold_kib > 0:
@@ -419,6 +436,14 @@ class QbSmartQueue(_PluginBase):
             t_size = t.get("total_size", 0)
             t_save = t.get("save_path", "")
 
+            if t_left == 0:
+                # 已下载完成但处于暂停状态，直接恢复（无需磁盘空间，不受低空间限制）
+                if t_hash:
+                    release_ids.append(t_hash)
+                    released.append(t_name)
+                    logger.info(f"[{service_name}] 恢复已完成种子: {t_name}")
+                continue
+
             # 跳过 save_path 处于低空间磁盘的种子，不放行
             if low_space_paths and t_save:
                 is_low_space_path = low_space_match_cache.get(t_save)
@@ -434,14 +459,6 @@ class QbSmartQueue(_PluginBase):
                         f"(目录 {t_save})"
                     )
                     continue
-
-            if t_left == 0:
-                # 已下载完成但处于暂停状态，直接恢复
-                if t_hash:
-                    release_ids.append(t_hash)
-                    released.append(t_name)
-                    logger.info(f"[{service_name}] 恢复已完成种子: {t_name}")
-                continue
 
             matched_path = matched_path_cache.get(t_save)
             if matched_path is None and t_save not in matched_path_cache:
