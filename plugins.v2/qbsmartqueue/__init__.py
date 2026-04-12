@@ -29,7 +29,7 @@ class QbSmartQueue(_PluginBase):
     # 插件图标
     plugin_icon = "Qbittorrent_A.png"
     # 插件版本
-    plugin_version = "2.1.0"
+    plugin_version = "2.2.0"
     # 插件作者
     plugin_author = "baranwang"
     # 作者主页
@@ -71,6 +71,10 @@ class QbSmartQueue(_PluginBase):
     _low_speed_stalled_only: bool = False
     _mponly: bool = True
     _min_free_gb: float = 5
+    _enable_dead_seed_detection: bool = False
+    _dead_seed_confirmed_hours: float = 24
+    _dead_seed_action: str = "notify"       # "notify" | "pause"
+    _dead_seed_tag: str = "死种"
 
     def init_plugin(self, config: dict = None):
         self._event = threading.Event()
@@ -102,6 +106,10 @@ class QbSmartQueue(_PluginBase):
             self._download_paths = config.get("download_paths") or []
             self._min_free_gb = float(config.get("min_free_gb") or 5)
             self._downloaders = config.get("downloaders") or []
+            self._enable_dead_seed_detection = config.get("enable_dead_seed_detection", False)
+            self._dead_seed_confirmed_hours = float(config.get("dead_seed_confirmed_hours") or 24)
+            self._dead_seed_action = config.get("dead_seed_action") or "notify"
+            self._dead_seed_tag = config.get("dead_seed_tag", "死种")
 
         self.stop_service()
 
@@ -131,6 +139,10 @@ class QbSmartQueue(_PluginBase):
                 "download_paths": self._download_paths,
                 "min_free_gb": self._min_free_gb,
                 "downloaders": self._downloaders,
+                "enable_dead_seed_detection": self._enable_dead_seed_detection,
+                "dead_seed_confirmed_hours": self._dead_seed_confirmed_hours,
+                "dead_seed_action": self._dead_seed_action,
+                "dead_seed_tag": self._dead_seed_tag,
             })
             if self._scheduler.get_jobs():
                 self._scheduler.print_jobs()
@@ -329,6 +341,69 @@ class QbSmartQueue(_PluginBase):
                 if not torrents:
                     return
 
+        # ── 2.5 死种检测（两阶段：候选观察 → 确认） ──
+        import time as _time
+        all_hashes = {t.get("hash") for t in torrents if t.get("hash")}
+        dead_candidates = self._load_dead_candidates()
+        dead_confirmed = self._load_dead_confirmed()
+
+        # cleanup：移除已被用户从 qBittorrent 中删除的种子
+        dead_candidates = {h: ts for h, ts in dead_candidates.items() if h in all_hashes}
+        dead_confirmed &= all_hashes
+
+        newly_confirmed = []
+        if self._enable_dead_seed_detection:
+            now = _time.time()
+            threshold = self._dead_seed_confirmed_hours * 3600
+            for t in torrents:
+                t_hash = t.get("hash")
+                if not t_hash or t_hash in dead_confirmed:
+                    continue
+                if self._looks_dead(t):
+                    if t_hash not in dead_candidates:
+                        dead_candidates[t_hash] = now
+                        logger.debug(
+                            f"[{service_name}] 死种候选: {t.get('name', '')} 开始观察"
+                        )
+                    elif now - dead_candidates[t_hash] >= threshold:
+                        dead_confirmed.add(t_hash)
+                        del dead_candidates[t_hash]
+                        newly_confirmed.append(t)
+                        logger.info(
+                            f"[{service_name}] 确认死种: {t.get('name', '')} "
+                            f"(持续 {self._dead_seed_confirmed_hours}h 无响应)"
+                        )
+                else:
+                    if t_hash in dead_candidates:
+                        dead_candidates.pop(t_hash)
+                        logger.debug(
+                            f"[{service_name}] 死种候选重置: {t.get('name', '')} "
+                            f"(条件不再满足)"
+                        )
+
+        self._save_dead_candidates(dead_candidates)
+        self._save_dead_confirmed(dead_confirmed)
+
+        if newly_confirmed:
+            confirmed_ids = [t.get("hash") for t in newly_confirmed if t.get("hash")]
+            if self._dead_seed_tag and confirmed_ids:
+                downloader.set_torrents_tag(ids=confirmed_ids, tags=[self._dead_seed_tag])
+            if self._dead_seed_action == "pause":
+                self._stop_torrent_ids(downloader, confirmed_ids)
+                torrents, _ = self._fetch_torrents(downloader)
+                if not torrents:
+                    return
+            if self._notify:
+                self.post_message(
+                    mtype=NotificationType.SiteMessage,
+                    title="【qBittorrent 智能体积调度】",
+                    text=(
+                        f"下载器: {service_name}\n"
+                        f"检测到 {len(newly_confirmed)} 个死种:\n"
+                        + "\n".join(t.get("name", "") for t in newly_confirmed[:5])
+                    ),
+                )
+
         # ── 3. 分类种子 ──
         active_torrents = []
         paused_torrents = []
@@ -434,6 +509,11 @@ class QbSmartQueue(_PluginBase):
             t_name = t.get("name", "")
             t_hash = t.get("hash")
             t_size = t.get("total_size", 0)
+
+            # 跳过已确认死种，防止反复 resume
+            if t_hash and t_hash in dead_confirmed:
+                logger.debug(f"[{service_name}] 跳过死种: {t_name}")
+                continue
             t_save = t.get("save_path", "")
 
             if t_left == 0:
@@ -690,6 +770,32 @@ class QbSmartQueue(_PluginBase):
         threshold_bps = self._low_speed_threshold_kib * 1024
         speed_bps = self._get_download_speed_bps(torrent)
         return speed_bps <= threshold_bps
+
+    @staticmethod
+    def _looks_dead(torrent: Dict[str, Any]) -> bool:
+        """
+        瞬时死种判断：stalledDL + 全网无做种 + 零速度。
+        不含时间窗口，由调用方通过持续观察确认。
+        """
+        if torrent.get("state") != "stalledDL":
+            return False
+        if torrent.get("num_complete", 0) > 0:
+            return False
+        return QbSmartQueue._get_download_speed_bps(torrent) == 0
+
+    def _load_dead_candidates(self) -> Dict[str, float]:
+        """加载死种候选观察记录 {hash: 首次检测时间戳}"""
+        return dict(self.get_data("dead_seed_candidates") or {})
+
+    def _save_dead_candidates(self, data: Dict[str, float]):
+        self.save_data("dead_seed_candidates", data)
+
+    def _load_dead_confirmed(self) -> set:
+        """加载已确认死种哈希集合"""
+        return set(self.get_data("dead_seed_confirmed") or [])
+
+    def _save_dead_confirmed(self, data: set):
+        self.save_data("dead_seed_confirmed", list(data))
 
     @staticmethod
     def _stop_torrent_ids(downloader: Any, torrent_ids: List[str]):
@@ -1053,6 +1159,74 @@ class QbSmartQueue(_PluginBase):
                             },
                         ],
                     },
+                    # ── 死种检测 ──
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "enable_dead_seed_detection",
+                                            "label": "启用死种检测",
+                                            "hint": "stalledDL + 全网无做种 + 零速度，持续超过阈值则确认",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "dead_seed_confirmed_hours",
+                                            "label": "确认阈值（小时）",
+                                            "placeholder": "24",
+                                            "type": "number",
+                                            "hint": "持续满足死种条件多少小时后确认",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "dead_seed_action",
+                                            "label": "确认后动作",
+                                            "items": [
+                                                {"title": "仅通知", "value": "notify"},
+                                                {"title": "暂停", "value": "pause"},
+                                            ],
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "dead_seed_tag",
+                                            "label": "qBittorrent 标签",
+                                            "placeholder": "死种",
+                                            "hint": "确认死种后打的标签，留空则不打标签",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
                     # ── 说明 ──
                     {
                         "component": "VRow",
@@ -1073,6 +1247,7 @@ class QbSmartQueue(_PluginBase):
                                                 "3. 防死锁：无活跃下载时强制放行第一个\n\n"
                                                 "4. 磁盘保护：剩余空间低于阈值时仅暂停对应目录下载\n\n"
                                                 "5. 低速宽容：溢出保护优先保留低速种子\n\n"
+                                                "6. 死种检测：持续无响应的种子打标签/暂停，不再占用队列槽位\n\n"
                                                 "权重说明：每个维度 0~10，0 = 不参与排序，值越大影响越大"
                                             ),
                                         },
@@ -1100,6 +1275,10 @@ class QbSmartQueue(_PluginBase):
             "download_paths": [],
             "min_free_gb": 5,
             "downloaders": [],
+            "enable_dead_seed_detection": False,
+            "dead_seed_confirmed_hours": 24,
+            "dead_seed_action": "notify",
+            "dead_seed_tag": "死种",
         }
 
     def get_page(self) -> List[dict]:
